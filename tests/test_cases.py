@@ -127,8 +127,10 @@ def test_neighbouring_bend_cannot_donate_its_extent(tmp_path):
     result = run(path)
     assert not result.ok
     assert "asymmetric-pairing" in codes(result)
-    detail = next(d for d in result.report.errors if d.code == "asymmetric-pairing")
+    detail = next(d for d in result.report.items if d.code == "asymmetric-pairing")
     assert {detail.context["left_offset"], detail.context["right_offset"]} == {1.0, 3.0}
+    # Both bends get skipped, so nothing is left to notch and that is the hard error.
+    assert "no-bends-paired" in {d.code for d in result.report.errors}
 
 
 def test_a_bend_with_only_one_extent_is_refused(tmp_path):
@@ -141,6 +143,7 @@ def test_a_bend_with_only_one_extent_is_refused(tmp_path):
     result = run(path)
     assert not result.ok
     assert "unpaired-bend" in codes(result)
+    assert "no-bends-paired" in {d.code for d in result.report.errors}
 
 
 def test_a_non_parallel_extent_is_not_adopted(tmp_path):
@@ -176,6 +179,7 @@ def test_depth_larger_than_half_the_bend_is_refused(tmp_path):
     result = run(rect_one_bend(tmp_path), depth=11.0)
     assert not result.ok
     assert "bend-too-short" in codes(result)
+    assert "no-bends-paired" in {d.code for d in result.report.errors}
 
 
 def test_a_bend_that_does_not_reach_an_edge_is_skipped(tmp_path):

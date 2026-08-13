@@ -14,7 +14,15 @@ from pathlib import Path
 import ezdxf
 import numpy as np
 
-from .curves import ArcCurve, Curve, LineCurve, PolylineCurve, SplineCurve, UnsupportedEntity, curves_from_entity
+from .curves import (
+    ArcCurve,
+    Curve,
+    LineCurve,
+    PolylineCurve,
+    SplineCurve,
+    UnsupportedEntity,
+    curves_from_entity,
+)
 from .report import Report
 
 ROLES = ("outer", "interior", "bend", "extent")
@@ -155,26 +163,56 @@ def collect_curves(doc, layer: str, report: Report) -> tuple[list[Curve], dict[i
 
 
 def segments_on_layer(doc, layer: str, report: Report):
-    """LINE entities on a layer, as (start, end) pairs. Bend and extent layers only."""
+    """Straight segments on a layer, for the bend and extent layers.
+
+    Fusion does not always write these as LINE entities — a bend or extent can arrive as a
+    two-vertex LWPOLYLINE, and several of them can share one polyline. Everything is routed
+    through the same curve conversion the profile uses, so polylines are expanded into their
+    straight runs and object coordinate systems are undone on the way.
+    """
     from .bends import Segment
 
     out = []
-    for e in doc.modelspace():
+    curved = 0
+    for eid, e in enumerate(doc.modelspace()):
         if e.dxf.layer != layer:
             continue
-        if e.dxftype() != "LINE":
+        if e.dxftype() not in CURVE_TYPES:
             report.warn(
-                "non-line-on-bend-layer",
-                f"Layer {layer!r} contains a {e.dxftype()}; only LINE entities are used here.",
+                "unusable-on-bend-layer",
+                f"Layer {layer!r} contains a {e.dxftype()}, which describes no line; ignored.",
                 layer=layer,
                 dxftype=e.dxftype(),
             )
             continue
-        out.append(
-            Segment(
-                np.array([e.dxf.start.x, e.dxf.start.y]),
-                np.array([e.dxf.end.x, e.dxf.end.y]),
+        try:
+            pieces = curves_from_entity(e, eid)
+        except UnsupportedEntity as exc:
+            report.warn(
+                "unusable-on-bend-layer",
+                f"Layer {layer!r} contains an unsupported {exc} entity; ignored.",
+                layer=layer,
+                dxftype=str(exc),
             )
+            continue
+        for piece in pieces:
+            if isinstance(piece, LineCurve):
+                runs = [(piece.a, piece.b)]
+            elif isinstance(piece, PolylineCurve):
+                runs = list(zip(piece.pts[:-1], piece.pts[1:]))
+            else:
+                curved += 1
+                continue
+            for a, b in runs:
+                if np.hypot(*(np.asarray(b) - np.asarray(a))) > 0:
+                    out.append(Segment(np.asarray(a, dtype=float), np.asarray(b, dtype=float)))
+    if curved:
+        report.warn(
+            "curved-on-bend-layer",
+            f"Layer {layer!r} contains {curved} curved segment(s). A bend line and its extents "
+            f"have to be straight, so those were ignored.",
+            layer=layer,
+            count=curved,
         )
     return out
 
@@ -239,6 +277,26 @@ def write_result(
     for layer in (mapping.get("bend"), mapping.get("extent")):
         if layer and layer in doc.layers:
             doc.layers.remove(layer)
+
+    # Fusion's own export carries invalid owner handles in its OBJECTS dictionaries. ezdxf
+    # repairs those when reading but the repair is only in memory, so without this the written
+    # file inherits them and strict importers reject it as a translation failure.
+    audit = doc.audit()
+    if audit.fixes:
+        report.info(
+            "repaired-structure",
+            f"Repaired {len(audit.fixes)} structural problem(s) inherited from the source file "
+            f"so the output imports cleanly.",
+            count=len(audit.fixes),
+        )
+    if audit.errors:
+        report.warn(
+            "unrepaired-structure",
+            f"{len(audit.errors)} structural problem(s) in the source file could not be "
+            f"repaired; the output may be rejected on import. First: "
+            f"{audit.errors[0].message}",
+            count=len(audit.errors),
+        )
 
     doc.saveas(out_path)
     # Only the basename goes into the report — the full path is a server detail that has no

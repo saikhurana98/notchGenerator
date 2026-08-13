@@ -105,6 +105,19 @@ ends up marginally *deeper* than the number given — on the sample, a 2 mm dept
 of actual relief. Use `--depth-from edge` to get exactly `depth` mm of material removed regardless of
 where the bend line stops.
 
+## Bend and extent geometry
+
+These are not always exported as `LINE` entities. A bend or an extent can arrive as a two-vertex
+`LWPOLYLINE`, and one polyline can carry several of them as separate straight runs. All of it goes
+through the same conversion the profile uses, so polylines are expanded into their straight runs and
+object coordinate systems are undone on the way. Curved segments and non-geometric entities on those
+layers are reported and ignored, since a bend and its extents have to be straight.
+
+A bend that cannot be paired with an extent on each side is skipped with a warning naming it, and the
+remaining bends are still notched — one odd bend on a thirty-bend part should not cost the other
+twenty-nine their relief cuts. If *no* bend can be paired, that is an error, and it usually means the
+bend and extent layers are mapped the wrong way round.
+
 ## Layer mapping
 
 Layer names are auto-detected — `OUTER*`/`*PROFILE*`, `INTERIOR*`/`INNER*`, `BEND`, `*EXTENT*` — and,
@@ -174,7 +187,7 @@ src/notchgen/
   api.py        FastAPI routes and the session store
   cli.py        command line entry point
 web/            the portal: one page, no build step, no dependencies
-tests/          80 tests, including regressions pinned to the sample file
+tests/          91 tests, including regressions pinned to the sample file
 ```
 
 ## Development

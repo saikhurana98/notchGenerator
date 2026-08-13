@@ -132,10 +132,13 @@ def pair_bends(
                 extent=ei,
             )
         if not negatives or not positives:
-            report.error(
+            # One odd bend must not cost the other thirty their relief cuts, so this skips
+            # the bend and says so rather than failing the whole file.
+            report.warn(
                 "unpaired-bend",
                 f"Bend line {bi} has {len(negatives)} extent(s) on one side and "
-                f"{len(positives)} on the other; expected one each.",
+                f"{len(positives)} on the other; expected one each. Skipped — no notches were "
+                f"cut at this bend.",
                 bend=bi,
             )
             continue
@@ -152,11 +155,11 @@ def pair_bends(
         skew = abs(abs(left.offset) - abs(right.offset))
         limit = max(cfg.symmetry_tol_abs, cfg.symmetry_tol_rel * max(abs(left.offset), abs(right.offset)))
         if skew > limit:
-            report.error(
+            report.warn(
                 "asymmetric-pairing",
                 f"Bend line {bi} paired with extents {abs(left.offset):.4f} and "
                 f"{abs(right.offset):.4f} from it. A bend line should be mid-zone, so this "
-                f"pairing is probably picking up a neighbouring bend's extent.",
+                f"pairing is probably picking up a neighbouring bend's extent. Skipped.",
                 bend=bi,
                 left_offset=abs(left.offset),
                 right_offset=abs(right.offset),
@@ -164,16 +167,34 @@ def pair_bends(
             )
             continue
         if bend.length < 2 * cfg.depth:
-            report.error(
+            report.warn(
                 "bend-too-short",
                 f"Bend line {bi} is {bend.length:.3f} long, shorter than two notch depths "
-                f"({2 * cfg.depth:.3f}); its two notches would collide.",
+                f"({2 * cfg.depth:.3f}); its two notches would collide. Skipped.",
                 bend=bi,
             )
             continue
         pairs.append(BendPair(bi, bend, left, right))
 
-    if len(extents) != 2 * len(bends):
+    skipped = len(bends) - len(pairs)
+    if skipped and pairs:
+        report.warn(
+            "bends-skipped",
+            f"{skipped} of {len(bends)} bend lines could not be paired with an extent line on "
+            f"each side and were skipped; the other {len(pairs)} were notched.",
+            skipped=skipped,
+            total=len(bends),
+        )
+    if not pairs:
+        report.error(
+            "no-bends-paired",
+            f"None of the {len(bends)} bend lines could be paired with an extent line on each "
+            f"side, from {len(extents)} extent line(s) found. Check that the bend and extent "
+            f"layers are mapped the right way round.",
+            bends=len(bends),
+            extents=len(extents),
+        )
+    elif len(extents) != 2 * len(bends):
         report.info(
             "extent-count",
             f"{len(extents)} extent lines for {len(bends)} bend lines; expected {2 * len(bends)}.",
