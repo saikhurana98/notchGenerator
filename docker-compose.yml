@@ -1,0 +1,13 @@
+services:
+  notchgen:
+    build: .
+    image: notchgen:latest
+    ports:
+      - "${NOTCHGEN_PORT:-8000}:8000"
+    volumes:
+      # Uploaded and generated files. Swept after six hours; safe to delete at any time.
+      - notchgen-sessions:/data
+    restart: unless-stopped
+
+volumes:
+  notchgen-sessions:
