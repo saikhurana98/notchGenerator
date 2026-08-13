@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from . import dxfio, render
 from .bends import pair_bends
 from .config import Config
-from .curves import SplineCurve
+from .geom import cross2, dot2, norm
+from .curves import LineCurve, SplineCurve
 from .loop import build_loops, drop_duplicate_curves
 from .notch import Notch, Surgery, build_all
 from .report import Report
@@ -59,6 +60,71 @@ class Result:
         }
 
 
+def _contaminating_lines(outer_curves, segments, tol: float = 1e-6) -> int:
+    """Outer-profile curves that lie along a bend or extent line.
+
+    A bend or extent line sitting on the outer layer dead-ends in the middle of the part, so
+    the trace breaks into pieces there. Worth naming, because the fix is a layer change
+    rather than anything to do with tolerances.
+    """
+    if not segments:
+        return 0
+    hits = 0
+    for curve in outer_curves:
+        if not isinstance(curve, LineCurve):
+            continue
+        a, b = curve.start(), curve.end()
+        for seg in segments:
+            direction = seg.b - seg.a
+            length = norm(direction)
+            if length == 0:
+                continue
+            u = direction / length
+            # Same infinite line, and overlapping it rather than merely pointing along it.
+            if abs(cross2(u, a - seg.a)) > tol or abs(cross2(u, b - seg.a)) > tol:
+                continue
+            ta, tb = dot2(a - seg.a, u), dot2(b - seg.a, u)
+            if min(ta, tb) < length + tol and max(ta, tb) > -tol:
+                hits += 1
+                break
+    return hits
+
+
+def _contamination_hint(outer_curves, bends, extents) -> str:
+    count = _contaminating_lines(outer_curves, [*bends, *extents])
+    if not count:
+        return ""
+    return (
+        f" The outer layer also holds {count} line(s) lying along your bend or bend-extent "
+        f"lines. Those belong on their own layers only — on the outer layer they dead-end "
+        f"inside the part and break the outline into pieces."
+    )
+
+
+# A gap this small is a CAD rounding artefact, not a modelling mistake: it is two orders of
+# magnitude below a laser kerf, so closing it silently is the honest thing to do. Anything
+# larger gets a warning, because at that point it might be a real sketch problem.
+NEGLIGIBLE_GAP = 1e-3
+
+
+def _report_gap(report: Report, gap: float, cfg: Config) -> None:
+    if gap <= NEGLIGIBLE_GAP:
+        report.info(
+            "profile-gap-closed",
+            f"The outer profile had a {gap:.3g} gap in it, which is rounding noise from CAD and "
+            f"far below any cutting tolerance; closed silently.",
+            gap=gap,
+        )
+        return
+    report.warn(
+        "profile-gap-bridged",
+        f"The outer profile had a {gap:.4g} gap in it. That is under the {cfg.bridge_tol:g} "
+        f"bridging limit so it was closed, but it is large enough to be worth a look at the "
+        f"sketch.",
+        gap=gap,
+    )
+
+
 def _skipped_hint(report: Report) -> str:
     """A skipped entity leaves a hole in the profile, which looks exactly like a sketch gap."""
     skipped = [d for d in report.items if d.code == "unsupported-entity"]
@@ -71,7 +137,7 @@ def _skipped_hint(report: Report) -> str:
     )
 
 
-def _stitch_outer(outer_curves, cfg: Config, report: Report):
+def _stitch_outer(outer_curves, cfg: Config, report: Report, bends=(), extents=()):
     """Turn the outer-profile curves into one closed loop, or explain why we cannot."""
     curves, duplicates, degenerate = drop_duplicate_curves(
         outer_curves, cfg.stitch_tol, cfg.chord_tol
@@ -90,19 +156,25 @@ def _stitch_outer(outer_curves, cfg: Config, report: Report):
             count=len(duplicates),
         )
 
-    loops, worst_gap = build_loops(curves, cfg.stitch_tol, cfg.bridge_tol)
+    # CAD rounding can leave a gap anywhere, not only at the seam where the outline closes.
+    # Try the strict tolerance first, then once more at the bridging limit, so a rounding-scale
+    # gap between two curves in the middle of the chain is tolerated the same way.
+    attempts = [cfg.stitch_tol]
+    if cfg.bridge_tol > cfg.stitch_tol:
+        attempts.append(cfg.bridge_tol)
+    loops, worst_gap, used_tol = [], 0.0, cfg.stitch_tol
+    for tol in attempts:
+        loops, worst_gap = build_loops(curves, tol, cfg.bridge_tol)
+        used_tol = tol
+        if len(loops) == 1 and loops[0].closed:
+            break
     closed = [lp for lp in loops if lp.closed]
 
     if len(closed) == 1 and len(loops) == 1:
         loop = closed[0]
-        if loop.bridged:
-            report.warn(
-                "profile-gap-bridged",
-                f"The outer profile was left open by {loop.bridged:.4g}; that is below the "
-                f"{cfg.bridge_tol:g} bridging limit, so it was treated as closed. Check the "
-                f"sketch if you did not expect a gap.",
-                gap=loop.bridged,
-            )
+        slack = max(loop.bridged, worst_gap if used_tol > cfg.stitch_tol else 0.0)
+        if slack:
+            _report_gap(report, slack, cfg)
         report.info(
             "loop-stitched",
             f"Outer profile stitched into one closed loop of {len(loop)} curves; worst junction "
@@ -123,7 +195,9 @@ def _stitch_outer(outer_curves, cfg: Config, report: Report):
             f"junction matched (worst {worst_gap:.3e}) but the two ends are {chain.close_gap:.4g} "
             f"apart, at ({start[0]:.4f}, {start[1]:.4f}) and ({end[0]:.4f}, {end[1]:.4f}). "
             f"Close the sketch at that point, or raise the bridging limit above "
-            f"{chain.close_gap:.4g} if the gap is not real." + _skipped_hint(report),
+            f"{chain.close_gap:.4g} if the gap is not real."
+            + _skipped_hint(report)
+            + _contamination_hint(outer_curves, bends, extents),
             close_gap=chain.close_gap,
             worst_gap=worst_gap,
             open_at=[start, end],
@@ -139,7 +213,9 @@ def _stitch_outer(outer_curves, cfg: Config, report: Report):
         "profile-not-one-loop",
         f"The outer profile stitched into {len(loops)} separate chains ({detail}) at a "
         f"tolerance of {cfg.stitch_tol:g}. Exactly one closed outline is required — check "
-        f"whether the layer also holds interior geometry or a second part.",
+        f"whether the layer also holds interior geometry or a second part."
+        + _skipped_hint(report)
+        + _contamination_hint(outer_curves, bends, extents),
         loops=len(loops),
         closed=len(closed),
         worst_gap=worst_gap,
@@ -205,12 +281,12 @@ def process(path: str, mapping: dict[str, str], cfg: Config) -> Result:
                     deviation=dev,
                 )
 
-    loop = _stitch_outer(outer_curves, cfg, report)
-    if loop is None:
-        return result
-
     bends = dxfio.segments_on_layer(doc, mapping["bend"], report)
     extents = dxfio.segments_on_layer(doc, mapping["extent"], report)
+
+    loop = _stitch_outer(outer_curves, cfg, report, bends, extents)
+    if loop is None:
+        return result
     if cfg.thickness and cfg.depth < cfg.thickness:
         report.warn(
             "depth-under-thickness",

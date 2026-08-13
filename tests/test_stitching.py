@@ -73,6 +73,62 @@ def test_an_open_chain_reports_the_closure_gap_not_the_junction_gap(tmp_path):
     assert len(result.notches) == 0
 
 
+def open_mid_chain(path, gap: float):
+    """Open a junction in the middle of the chain rather than at the seam.
+
+    This is the case a closure-only fix misses: the trace breaks in two here, so it fails
+    with a separate-chains error instead of an unclosed-outline one.
+    """
+    doc = ezdxf.readfile(path)
+    right = next(
+        e for e in doc.modelspace()
+        if e.dxf.layer == OUTER and e.dxf.start.x == 40.0 and e.dxf.end.x == 40.0
+    )
+    right.dxf.start = (40.0, gap)
+    doc.saveas(path)
+
+
+@pytest.mark.parametrize("where", ["seam", "mid"])
+def test_rounding_noise_is_closed_silently_wherever_it_sits(tmp_path, where):
+    """A 4.5e-5 gap is two orders below a laser kerf, so it must not need a decision."""
+    path = plate(tmp_path, name=f"noise-{where}.dxf")
+    if where == "seam":
+        open_at_the_seed(path, 4.484e-05)
+    else:
+        open_mid_chain(path, 4.484e-05)
+
+    result = run(path)
+    assert result.ok, result.report.text()
+    assert len(result.notches) == 2
+    assert "profile-gap-closed" in codes(result)
+    # Nothing the operator has to act on, so nothing the portal shows.
+    assert not [d for d in result.report.items if d.level in ("warn", "error")]
+
+
+@pytest.mark.parametrize("where", ["seam", "mid"])
+def test_a_gap_worth_looking_at_is_warned_about(tmp_path, where):
+    path = plate(tmp_path, name=f"warn-{where}.dxf")
+    if where == "seam":
+        open_at_the_seed(path, 0.005)
+    else:
+        open_mid_chain(path, 0.005)
+
+    result = run(path)
+    assert result.ok, result.report.text()
+    assert "profile-gap-bridged" in codes(result)
+    detail = next(d for d in result.report.items if d.code == "profile-gap-bridged")
+    assert detail.level == "warn"
+    assert detail.context["gap"] == pytest.approx(0.005, abs=1e-6)
+
+
+def test_a_mid_chain_gap_was_previously_a_hard_failure(tmp_path):
+    """bridge_tol=0 is the old behaviour: the same file fails as two separate chains."""
+    path = plate(tmp_path)
+    open_mid_chain(path, 4.484e-05)
+    assert "profile-not-one-loop" in codes(run(path, bridge_tol=0.0))
+    assert run(path).ok
+
+
 def test_a_rounding_scale_gap_is_bridged_with_a_warning(tmp_path):
     path = plate(tmp_path)
     open_at_the_seed(path, 0.004)
@@ -178,3 +234,33 @@ def test_the_sample_still_stitches_without_any_warning(sample_path):
     assert loops[0].bridged == 0.0
     assert loops[0].close_gap < 1e-9
     assert worst < 1e-9
+
+
+# -- bend and extent lines on the wrong layer -----------------------------------
+
+
+def test_bend_lines_on_the_outer_layer_are_named_in_the_error(tmp_path):
+    """They dead-end inside the part, so the fix is a layer change, not a tolerance."""
+    path = plate(tmp_path)
+    doc = ezdxf.readfile(path)
+    msp = doc.modelspace()
+    for x in (17.0, 20.0, 23.0):
+        msp.add_line((x, 0.0), (x, 20.0), dxfattribs={"layer": OUTER})
+    doc.saveas(path)
+
+    result = run(path)
+    assert not result.ok
+    detail = next(d for d in result.report.errors if d.code.startswith("profile-"))
+    assert "bend or bend-extent" in detail.message
+
+
+def test_a_clean_file_is_not_accused_of_contamination(sample_path):
+    from notchgen import dxfio
+    from notchgen.pipeline import _contaminating_lines
+
+    report = pipeline.Report()
+    doc = dxfio.read(sample_path)
+    curves, _ = dxfio.collect_curves(doc, OUTER, report)
+    bends = dxfio.segments_on_layer(doc, "BEND", report)
+    extents = dxfio.segments_on_layer(doc, "BEND_EXTENT", report)
+    assert _contaminating_lines(curves, [*bends, *extents]) == 0

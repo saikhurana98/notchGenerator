@@ -139,10 +139,16 @@ junction gap, which in a clean export sits around 1e-10 whether or not the outli
 reports the closure gap along with the coordinates of both loose ends, so you can go straight to that
 point in the sketch.
 
-A gap smaller than `--bridge-tol` is closed for you with a warning. Duplicated edges and zero-length
-entities are dropped with a warning, since either one derails a trace. And if an entity on the layer
-was skipped for carrying no usable geometry — a `TEXT`, say — that is called out too, because a
-skipped entity leaves a hole that looks exactly like a sketch gap.
+A gap smaller than `--bridge-tol` is closed for you, wherever it sits — at the seam where the outline
+closes, or at any junction in between. Below 1e-3 it is closed silently, since a gap that small is CAD
+rounding noise two orders of magnitude under a laser kerf and there is nothing to decide; above that
+you get a warning worth reading.
+
+Duplicated edges and zero-length entities are dropped with a warning, since either one derails a
+trace. An entity skipped for carrying no usable geometry — a `TEXT`, say — is called out, because a
+skipped entity leaves a hole that looks exactly like a sketch gap. And bend or bend-extent lines
+sitting on the outer layer are named specifically: they dead-end inside the part, so the fix is a
+layer change rather than anything to do with tolerances.
 
 ## What it refuses to do
 
@@ -168,7 +174,7 @@ src/notchgen/
   api.py        FastAPI routes and the session store
   cli.py        command line entry point
 web/            the portal: one page, no build step, no dependencies
-tests/          73 tests, including regressions pinned to the sample file
+tests/          80 tests, including regressions pinned to the sample file
 ```
 
 ## Development
