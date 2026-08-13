@@ -36,6 +36,29 @@ If you would rather drive Compose yourself:
 docker compose up --build
 ```
 
+## Quick start (Windows, no Docker)
+
+```powershell
+irm https://raw.githubusercontent.com/SanchakGarg/notchGenerator/main/install.ps1 | iex
+```
+
+That clones the repo, installs `uv` if needed, syncs the virtualenv, registers `notchgen` and
+`notchgen-web` as commands on your `PATH`, then starts the portal and opens
+<http://localhost:8000> in your browser. No Docker involved.
+
+Options:
+
+```powershell
+./install.ps1 -Port 9000        # serve somewhere else
+./install.ps1 -NoBrowser        # don't open a browser tab
+```
+
+Once installed, start the portal again any time from a new terminal with:
+
+```powershell
+notchgen-web
+```
+
 ## Quick start (CLI)
 
 ```sh

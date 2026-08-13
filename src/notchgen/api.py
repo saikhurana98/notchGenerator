@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -24,7 +25,7 @@ SESSION_TTL_SECONDS = 6 * 3600
 # to be caught to turn "that isn't a DXF" into a 400 rather than a 500.
 UNREADABLE = (ezdxf.DXFError, OSError, UnicodeDecodeError, ValueError)
 
-DATA_DIR = Path(os.environ.get("NOTCHGEN_DATA", "/tmp/notchgen-sessions"))
+DATA_DIR = Path(os.environ.get("NOTCHGEN_DATA", str(Path(tempfile.gettempdir()) / "notchgen-sessions")))
 
 
 def _find_web_dir() -> Path | None:
