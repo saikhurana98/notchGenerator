@@ -41,7 +41,7 @@ def test_upload_reports_layers_and_a_suggested_mapping(client, sample_path):
     assert body["bounds"]["min"][0] == pytest.approx(-29.985, abs=1e-3)
 
 
-def test_process_then_download_yields_a_two_layer_dxf(client, sample_path, tmp_path):
+def test_process_then_download_yields_a_single_layer_dxf(client, sample_path, tmp_path):
     session = upload_sample(client, sample_path)["session_id"]
     response = client.post(
         "/api/process",
@@ -57,6 +57,26 @@ def test_process_then_download_yields_a_two_layer_dxf(client, sample_path, tmp_p
 
     got = client.get(f"/api/download/{session}")
     assert got.status_code == 200
+    out = tmp_path / "downloaded.dxf"
+    out.write_bytes(got.content)
+    doc = ezdxf.readfile(out)
+    assert {e.dxf.layer for e in doc.modelspace()} == {"OUTER_PROFILES"}
+
+
+def test_process_with_multi_layer_requested_keeps_layers_separate(client, sample_path, tmp_path):
+    session = upload_sample(client, sample_path)["session_id"]
+    response = client.post(
+        "/api/process",
+        json={
+            "session_id": session,
+            "mapping": MAPPING,
+            "depth": 2.0,
+            "single_layer": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    got = client.get(f"/api/download/{session}")
     out = tmp_path / "downloaded.dxf"
     out.write_bytes(got.content)
     doc = ezdxf.readfile(out)

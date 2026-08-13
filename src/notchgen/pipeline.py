@@ -318,7 +318,7 @@ def process(path: str, mapping: dict[str, str], cfg: Config) -> Result:
     return result
 
 
-def save(result: Result, out_path: str) -> None:
+def save(result: Result, out_path: str, single_layer: bool = True) -> None:
     if result.surgery is None:
         raise ValueError("nothing to save: processing did not produce a result")
     dxfio.write_result(
@@ -328,4 +328,5 @@ def save(result: Result, out_path: str) -> None:
         result.surgery.added,
         out_path,
         result.report,
+        single_layer=single_layer,
     )

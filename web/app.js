@@ -131,6 +131,7 @@ function readConfig() {
     depth_from: $('depth-from').value,
     shape: $('shape').value,
     merge_overlapping: $('merge_overlapping').checked,
+    single_layer: $('single_layer').checked,
   };
   if ($('thickness').value !== '') cfg.thickness = Number($('thickness').value);
   for (const field of TOLERANCE_FIELDS) {

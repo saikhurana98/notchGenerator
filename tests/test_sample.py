@@ -122,7 +122,7 @@ def _key(pt) -> tuple[float, float]:
 def test_written_file_is_cut_ready(sample_path, tmp_path):
     res = pipeline.process(sample_path, MAPPING, Config())
     out = tmp_path / "out.dxf"
-    pipeline.save(res, str(out))
+    pipeline.save(res, str(out), single_layer=False)
 
     doc = ezdxf.readfile(out)
     layers = {e.dxf.layer for e in doc.modelspace()}
@@ -148,6 +148,22 @@ def test_written_file_is_cut_ready(sample_path, tmp_path):
     assert len(hole_loops) == 2
     assert all(lp.closed for lp in hole_loops)
     assert all(lp.area() == pytest.approx(50.311, abs=0.01) for lp in hole_loops)
+
+
+def test_write_result_defaults_to_a_single_layer(sample_path, tmp_path):
+    res = pipeline.process(sample_path, MAPPING, Config())
+    out = tmp_path / "out.dxf"
+    pipeline.save(res, str(out))
+
+    doc = ezdxf.readfile(out)
+    assert {e.dxf.layer for e in doc.modelspace()} == {"OUTER_PROFILES"}
+    assert "INTERIOR_PROFILES" not in doc.layers
+
+    report = pipeline.Report()
+    holes, _ = dxfio.collect_curves(doc, "OUTER_PROFILES", report)
+    loops, _ = build_loops(holes, Config().stitch_tol)
+    hole_loops = [lp for lp in loops if lp.area() == pytest.approx(50.311, abs=0.01)]
+    assert len(hole_loops) == 2
 
 
 def test_surviving_splines_are_untouched(sample_path, tmp_path):

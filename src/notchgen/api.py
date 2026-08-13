@@ -104,6 +104,7 @@ class ProcessRequest(BaseModel):
     angle_tol: float | None = None
     max_stub: float | None = None
     merge_overlapping: bool = False
+    single_layer: bool = True
 
 
 @app.get("/healthz")
@@ -157,7 +158,7 @@ def process(request: ProcessRequest) -> JSONResponse:
     output = directory / "notched.dxf"
     output.unlink(missing_ok=True)
     if result.ok:
-        pipeline.save(result, str(output))
+        pipeline.save(result, str(output), single_layer=request.single_layer)
 
     body = result.as_dict()
     body["download_ready"] = output.exists()

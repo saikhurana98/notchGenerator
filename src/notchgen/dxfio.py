@@ -245,6 +245,7 @@ def write_result(
     added: list[Curve],
     out_path: str,
     report: Report,
+    single_layer: bool = True,
 ) -> None:
     """Rewrite the document in place to hold only the notched outer profile and the holes."""
     msp = doc.modelspace()
@@ -259,6 +260,8 @@ def write_result(
             if eid not in survivors:
                 doomed.append(e)
         elif interior_layer and layer == interior_layer:
+            if single_layer:
+                e.dxf.layer = outer_layer
             continue
         else:
             doomed.append(e)
@@ -271,9 +274,15 @@ def write_result(
     for curve in added:
         _add_curve(msp, curve, outer_layer)
 
-    for role, layer in (("outer", outer_layer), ("interior", interior_layer)):
-        if layer and layer not in doc.layers:
-            doc.layers.add(layer, color=7 if role == "outer" else 5)
+    if single_layer:
+        if outer_layer not in doc.layers:
+            doc.layers.add(outer_layer, color=7)
+        if interior_layer and interior_layer != outer_layer and interior_layer in doc.layers:
+            doc.layers.remove(interior_layer)
+    else:
+        for role, layer in (("outer", outer_layer), ("interior", interior_layer)):
+            if layer and layer not in doc.layers:
+                doc.layers.add(layer, color=7 if role == "outer" else 5)
     for layer in (mapping.get("bend"), mapping.get("extent")):
         if layer and layer in doc.layers:
             doc.layers.remove(layer)

@@ -56,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow notches whose cuts overlap instead of failing",
     )
+
+    g = p.add_argument_group("output")
+    g.add_argument(
+        "--multi-layer",
+        action="store_true",
+        help="keep the outer and interior profiles on separate layers (default: single layer)",
+    )
     return p
 
 
@@ -119,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.output:
-        pipeline.save(result, args.output)
+        pipeline.save(result, args.output, single_layer=not args.multi_layer)
         print(f"\nwrote {args.output}")
     else:
         print("\nno --output given; nothing written.")
