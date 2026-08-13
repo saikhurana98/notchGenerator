@@ -8,7 +8,7 @@ from . import dxfio, render
 from .bends import pair_bends
 from .config import Config
 from .curves import SplineCurve
-from .loop import build_loops
+from .loop import build_loops, drop_duplicate_curves
 from .notch import Notch, Surgery, build_all
 from .report import Report
 
@@ -57,6 +57,94 @@ class Result:
             "area_before": getattr(self.surgery, "area_before", 0.0),
             "area_after": getattr(self.surgery, "area_after", 0.0),
         }
+
+
+def _skipped_hint(report: Report) -> str:
+    """A skipped entity leaves a hole in the profile, which looks exactly like a sketch gap."""
+    skipped = [d for d in report.items if d.code == "unsupported-entity"]
+    if not skipped:
+        return ""
+    kinds = sorted({str(d.context.get("dxftype", "?")) for d in skipped})
+    return (
+        f" Note that {len(skipped)} entity/entities of type {', '.join(kinds)} on this layer "
+        f"were skipped, which would leave exactly this kind of hole in the outline."
+    )
+
+
+def _stitch_outer(outer_curves, cfg: Config, report: Report):
+    """Turn the outer-profile curves into one closed loop, or explain why we cannot."""
+    curves, duplicates, degenerate = drop_duplicate_curves(
+        outer_curves, cfg.stitch_tol, cfg.chord_tol
+    )
+    if degenerate:
+        report.warn(
+            "degenerate-profile-entity",
+            f"Ignored {len(degenerate)} zero-length entity/entities on the outer profile.",
+            count=len(degenerate),
+        )
+    if duplicates:
+        report.warn(
+            "duplicate-profile-entity",
+            f"Ignored {len(duplicates)} duplicated edge(s) on the outer profile. A profile "
+            f"carrying the same edge twice cannot be traced into a single outline.",
+            count=len(duplicates),
+        )
+
+    loops, worst_gap = build_loops(curves, cfg.stitch_tol, cfg.bridge_tol)
+    closed = [lp for lp in loops if lp.closed]
+
+    if len(closed) == 1 and len(loops) == 1:
+        loop = closed[0]
+        if loop.bridged:
+            report.warn(
+                "profile-gap-bridged",
+                f"The outer profile was left open by {loop.bridged:.4g}; that is below the "
+                f"{cfg.bridge_tol:g} bridging limit, so it was treated as closed. Check the "
+                f"sketch if you did not expect a gap.",
+                gap=loop.bridged,
+            )
+        report.info(
+            "loop-stitched",
+            f"Outer profile stitched into one closed loop of {len(loop)} curves; worst junction "
+            f"gap {worst_gap:.3e}.",
+            curves=len(loop),
+            worst_gap=worst_gap,
+        )
+        return loop
+
+    # Failure. Report the number that actually explains it — the closure gap and where the
+    # loose ends are — rather than the junction gap, which is usually perfect.
+    if len(loops) == 1 and not closed:
+        chain = loops[0]
+        start, end = chain.ends()
+        report.error(
+            "profile-not-closed",
+            f"The outer profile traces a single open chain of {len(chain)} curves: every "
+            f"junction matched (worst {worst_gap:.3e}) but the two ends are {chain.close_gap:.4g} "
+            f"apart, at ({start[0]:.4f}, {start[1]:.4f}) and ({end[0]:.4f}, {end[1]:.4f}). "
+            f"Close the sketch at that point, or raise the bridging limit above "
+            f"{chain.close_gap:.4g} if the gap is not real." + _skipped_hint(report),
+            close_gap=chain.close_gap,
+            worst_gap=worst_gap,
+            open_at=[start, end],
+            curves=len(chain),
+        )
+        return None
+
+    detail = ", ".join(
+        f"{len(lp)} curve(s) {'closed' if lp.closed else f'open by {lp.close_gap:.4g}'}"
+        for lp in loops
+    )
+    report.error(
+        "profile-not-one-loop",
+        f"The outer profile stitched into {len(loops)} separate chains ({detail}) at a "
+        f"tolerance of {cfg.stitch_tol:g}. Exactly one closed outline is required — check "
+        f"whether the layer also holds interior geometry or a second part.",
+        loops=len(loops),
+        closed=len(closed),
+        worst_gap=worst_gap,
+    )
+    return None
 
 
 def inspect(path: str, chord_tol: float = 1e-3) -> Inspection:
@@ -117,27 +205,9 @@ def process(path: str, mapping: dict[str, str], cfg: Config) -> Result:
                     deviation=dev,
                 )
 
-    loops, worst_gap = build_loops(outer_curves, cfg.stitch_tol)
-    closed = [lp for lp in loops if lp.closed]
-    if len(loops) != 1 or not closed:
-        report.error(
-            "profile-not-one-loop",
-            f"The outer profile stitched into {len(loops)} chain(s), of which {len(closed)} "
-            f"closed, at a tolerance of {cfg.stitch_tol:g}. The worst junction gap was "
-            f"{worst_gap:.3e}. A single closed outline is required.",
-            loops=len(loops),
-            closed=len(closed),
-            worst_gap=worst_gap,
-        )
+    loop = _stitch_outer(outer_curves, cfg, report)
+    if loop is None:
         return result
-    loop = closed[0]
-    report.info(
-        "loop-stitched",
-        f"Outer profile stitched into one closed loop of {len(loop)} curves; worst junction "
-        f"gap {worst_gap:.3e}.",
-        curves=len(loop),
-        worst_gap=worst_gap,
-    )
 
     bends = dxfio.segments_on_layer(doc, mapping["bend"], report)
     extents = dxfio.segments_on_layer(doc, mapping["extent"], report)

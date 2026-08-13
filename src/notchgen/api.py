@@ -100,6 +100,7 @@ class ProcessRequest(BaseModel):
     snap_tol: float | None = None
     sliver_tol: float | None = None
     chord_tol: float | None = None
+    bridge_tol: float | None = None
     angle_tol: float | None = None
     max_stub: float | None = None
     merge_overlapping: bool = False

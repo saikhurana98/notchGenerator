@@ -35,6 +35,13 @@ class Config:
     chord_tol: float = 1e-3
     """Sagitta used when flattening curves for hit-testing, area and display."""
 
+    bridge_tol: float = 0.01
+    """A profile left open by less than this is treated as closed, with a warning.
+
+    Sits above the ~1e-10 junction gaps a clean export produces and far below the
+    smallest genuine profile feature, so it only ever rescues a sketch that failed to
+    close by a rounding-scale amount."""
+
     angle_tol: float = 1e-3
     """Parallelism test on unit vectors, via |cross|."""
 

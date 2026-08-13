@@ -75,9 +75,19 @@ class Loop:
     links: list[Link]
     closed: bool
     worst_gap: float
+    """Largest gap bridged between consecutive curves."""
+
+    close_gap: float = 0.0
+    """Distance from the last curve's end back to the first curve's start."""
+
+    bridged: float = 0.0
+    """Closure gap that was accepted to make this a cycle, if any."""
 
     def __len__(self) -> int:
         return len(self.links)
+
+    def ends(self) -> tuple[Point, Point]:
+        return self.links[0].start(), self.links[-1].end()
 
     def flatten(self, chord_tol: float) -> np.ndarray:
         out: list[np.ndarray] = []
@@ -160,11 +170,54 @@ class Loop:
         return out
 
 
-def build_loops(curves: list[Curve], stitch_tol: float) -> tuple[list[Loop], float]:
-    """Stitch curves end-to-end into closed loops.
+def drop_duplicate_curves(
+    curves: list[Curve], tol: float, chord_tol: float = 1e-3
+) -> tuple[list[Curve], list[Curve], list[Curve]]:
+    """Split curves into (kept, duplicates, degenerate).
+
+    A profile carrying the same edge twice sends the stitcher down the copy and back,
+    so the walk consumes everything and still ends up somewhere other than where it
+    started. Zero-length entities cause the same kind of confusion.
+    """
+    kept: list[Curve] = []
+    duplicates: list[Curve] = []
+    degenerate: list[Curve] = []
+    signatures: list[tuple[Point, Point, float]] = []
+    for c in curves:
+        a, b = c.start(), c.end()
+        length = c.length(chord_tol)
+        if length <= tol and norm(b - a) <= tol:
+            degenerate.append(c)
+            continue
+        match = False
+        for sa, sb, slen in signatures:
+            if abs(slen - length) > max(tol, 1e-9):
+                continue
+            same = norm(sa - a) <= tol and norm(sb - b) <= tol
+            flipped = norm(sa - b) <= tol and norm(sb - a) <= tol
+            if same or flipped:
+                match = True
+                break
+        if match:
+            duplicates.append(c)
+        else:
+            signatures.append((a, b, length))
+            kept.append(c)
+    return kept, duplicates, degenerate
+
+
+def build_loops(
+    curves: list[Curve], stitch_tol: float, bridge_tol: float = 0.0
+) -> tuple[list[Loop], float]:
+    """Stitch curves end-to-end into loops.
 
     Returns the loops plus the worst junction gap actually used, so the caller can
-    report how much slack the tolerance had to absorb.
+    report how much slack the tolerance had to absorb. Each loop also carries its own
+    `close_gap`, which is the number that matters when a chain fails to close —
+    junction gaps can all be perfect while the two ends of the chain sit far apart.
+
+    `bridge_tol`, when larger than `stitch_tol`, accepts a chain whose ends are that
+    close as a cycle, recording the gap in `Loop.bridged`.
     """
     remaining = list(curves)
     loops: list[Loop] = []
@@ -190,9 +243,13 @@ def build_loops(curves: list[Curve], stitch_tol: float) -> tuple[list[Loop], flo
                 break
         close_gap = norm(links[-1].end() - links[0].start())
         closed = close_gap <= stitch_tol
+        bridged = 0.0
+        if not closed and close_gap <= bridge_tol:
+            closed = True
+            bridged = close_gap
         worst = max(worst, close_gap if closed else 0.0)
         worst_overall = max(worst_overall, worst)
-        loops.append(Loop(links, closed, worst))
+        loops.append(Loop(links, closed, worst, close_gap, bridged))
     return loops, worst_overall
 
 

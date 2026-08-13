@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("snap-tol", 0.02, "snapping a ray hit onto an existing profile vertex"),
         ("sliver-tol", 0.05, "shortest fragment worth emitting"),
         ("chord-tol", 1e-3, "sagitta when flattening curves"),
+        ("bridge-tol", 0.01, "close an outline left open by less than this"),
         ("angle-tol", 1e-3, "parallelism test between bend and extent lines"),
         ("max-stub", 1.0, "furthest an extent end may sit from the material edge"),
     ):
@@ -91,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         snap_tol=args.snap_tol,
         sliver_tol=args.sliver_tol,
         chord_tol=args.chord_tol,
+        bridge_tol=args.bridge_tol,
         angle_tol=args.angle_tol,
         max_stub=args.max_stub,
         thickness=args.thickness,

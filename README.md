@@ -123,12 +123,26 @@ Note that Fusion writes these layers *implicitly* — only layer `0` appears in 
 | `--snap-tol` | 0.02 | a ray hit snapping onto an existing profile vertex |
 | `--sliver-tol` | 0.05 | shortest fragment worth emitting |
 | `--chord-tol` | 1e-3 | sagitta when flattening curves for hit-testing and display |
+| `--bridge-tol` | 0.01 | an outline left open by less than this is closed, with a warning |
 | `--max-stub` | 1.0 | furthest an extent end may sit from the material edge |
 
 These are calibrated against the real numbers in a Fusion export rather than picked round: junction
 gaps come out around 4e-10, so `stitch-tol` has to be tiny; and `snap-tol` has to clear the 0.005
 corner-fillet miss while staying well under the smallest genuine profile feature, which on the
 sample is 0.079 long.
+
+## When the outline will not close
+
+The outer profile has to trace exactly one closed outline. When it does not, the number that
+explains why is the **closure gap** — the distance between the two loose ends of the chain — not the
+junction gap, which in a clean export sits around 1e-10 whether or not the outline closes. notchgen
+reports the closure gap along with the coordinates of both loose ends, so you can go straight to that
+point in the sketch.
+
+A gap smaller than `--bridge-tol` is closed for you with a warning. Duplicated edges and zero-length
+entities are dropped with a warning, since either one derails a trace. And if an entity on the layer
+was skipped for carrying no usable geometry — a `TEXT`, say — that is called out too, because a
+skipped entity leaves a hole that looks exactly like a sketch gap.
 
 ## What it refuses to do
 
@@ -154,7 +168,7 @@ src/notchgen/
   api.py        FastAPI routes and the session store
   cli.py        command line entry point
 web/            the portal: one page, no build step, no dependencies
-tests/          64 tests, including regressions pinned to the sample file
+tests/          73 tests, including regressions pinned to the sample file
 ```
 
 ## Development

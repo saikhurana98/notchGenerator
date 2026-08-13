@@ -313,7 +313,11 @@ def test_a_gappy_profile_is_reported_not_guessed_at(tmp_path):
 
     result = run(path)
     assert not result.ok
-    assert "profile-not-one-loop" in codes(result)
+    # A missing edge leaves one open chain, so the closure gap is the useful number.
+    assert "profile-not-closed" in codes(result)
+    detail = next(d for d in result.report.errors if d.code == "profile-not-closed")
+    assert detail.context["close_gap"] > 1.0
+    assert detail.context["worst_gap"] < 1e-9
 
 
 # -- entity types other than LINE on the outer profile ---------------------------

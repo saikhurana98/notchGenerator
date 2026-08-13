@@ -19,7 +19,9 @@ const STROKE = {
 };
 
 const DRAW_ORDER = ['ghost', 'extent', 'bend', 'interior', 'outer', 'notch'];
-const TOLERANCE_FIELDS = ['stitch_tol', 'snap_tol', 'sliver_tol', 'chord_tol', 'max_stub'];
+const TOLERANCE_FIELDS = [
+  'stitch_tol', 'snap_tol', 'sliver_tol', 'chord_tol', 'bridge_tol', 'max_stub',
+];
 
 const state = {
   sessionId: null,
