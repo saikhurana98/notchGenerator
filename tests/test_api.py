@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 import uuid
 
 import ezdxf
@@ -121,3 +122,58 @@ def test_expired_sessions_are_swept(client, sample_path, monkeypatch):
     session = upload_sample(client, sample_path)["session_id"]
     monkeypatch.setattr(api, "SESSION_TTL_SECONDS", -1)
     assert client.get(f"/api/download/{session}").status_code == 404
+
+
+# -- download naming and probing -------------------------------------------------
+
+
+def test_the_download_is_named_after_the_uploaded_file(client, sample_path):
+    with open(sample_path, "rb") as handle:
+        session = client.post(
+            "/api/upload",
+            files={"file": ("front_suspension - 1 (2.5 mm).dxf", handle, "image/vnd.dxf")},
+        ).json()["session_id"]
+    body = client.post("/api/process", json={"session_id": session, "mapping": MAPPING}).json()
+    assert body["download_name"] == "front_suspension - 1 (2.5 mm) with notch.dxf"
+
+    got = client.get(f"/api/download/{session}")
+    assert got.status_code == 200
+    # Spaces and parentheses mean the name is sent RFC 5987 encoded; browsers decode it back.
+    disposition = urllib.parse.unquote(got.headers["content-disposition"])
+    assert "front_suspension - 1 (2.5 mm) with notch.dxf" in disposition
+
+
+def test_head_on_a_download_is_answered(client, sample_path):
+    """Browsers probe a download with HEAD; a 404 there leaves the transfer hanging at 100%."""
+    session = upload_sample(client, sample_path)["session_id"]
+    client.post("/api/process", json={"session_id": session, "mapping": MAPPING})
+
+    head = client.head(f"/api/download/{session}")
+    get = client.get(f"/api/download/{session}")
+    assert head.status_code == 200
+    assert head.headers["content-length"] == get.headers["content-length"]
+    assert head.headers["content-length"] == str(len(get.content))
+
+
+def test_head_on_a_missing_download_is_still_a_404(client, sample_path):
+    session = upload_sample(client, sample_path)["session_id"]
+    assert client.head(f"/api/download/{session}").status_code == 404
+
+
+def test_the_download_is_served_as_an_opaque_file(client, sample_path):
+    session = upload_sample(client, sample_path)["session_id"]
+    client.post("/api/process", json={"session_id": session, "mapping": MAPPING})
+    got = client.get(f"/api/download/{session}")
+    assert got.headers["content-type"] == "application/octet-stream"
+    assert got.headers["content-disposition"].startswith("attachment;")
+    assert got.content.startswith(b"  0\nSECTION") or b"SECTION" in got.content[:64]
+
+
+def test_no_server_paths_leak_into_the_diagnostics(client, sample_path):
+    """The portal shows these strings, so absolute paths have no business in them."""
+    session = upload_sample(client, sample_path)["session_id"]
+    body = client.post("/api/process", json={"session_id": session, "mapping": MAPPING}).json()
+    blob = " ".join(d["message"] for d in body["diagnostics"])
+    assert "/tmp" not in blob
+    assert "notchgen-sessions" not in blob
+    assert session not in blob

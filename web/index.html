@@ -3,83 +3,103 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>notchgen — bend-relief notches for flat-pattern DXF</title>
+  <title>notchgen</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>notchgen</h1>
-  <p>Cut bend-relief notches into a sheet-metal flat pattern exported from Fusion&nbsp;360.</p>
+<header class="topbar">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M2 17h6l4-9 4 9h6" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span>notchgen</span>
+  </div>
+  <p class="tagline">Bend-relief notches for sheet-metal flat patterns</p>
 </header>
 
 <main>
+  <!-- step 1 -->
   <section id="step-upload" class="card">
-    <h2><span class="step">1</span> Choose a DXF</h2>
     <div id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a DXF file">
-      <strong>Drop a .dxf here</strong>
+      <svg viewBox="0 0 24 24" aria-hidden="true" class="dropicon">
+        <path d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"
+              fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <strong>Drop a DXF flat pattern here</strong>
       <span>or click to browse</span>
       <input type="file" id="file" accept=".dxf" hidden>
     </div>
-    <p id="upload-status" class="status" hidden></p>
+    <p id="upload-error" class="status error" hidden></p>
   </section>
 
-  <section id="step-map" class="card" hidden>
-    <h2><span class="step">2</span> Map the layers</h2>
-    <p class="hint">Guessed from the layer names and contents. Change anything that looks wrong.</p>
-    <div class="roles" id="roles"></div>
+  <!-- the loaded file, once there is one -->
+  <div id="filebar" class="filebar" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true" class="fileicon">
+      <path d="M14 3v5h5M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8z"
+            fill="none" stroke="currentColor" stroke-width="1.7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span id="filename"></span>
+    <button id="change-file" class="link">Change</button>
+  </div>
 
-    <div class="controls">
-      <label>Notch depth (mm)
-        <input type="number" id="depth" value="2" min="0.01" step="0.1">
+  <!-- step 2 -->
+  <section id="step-map" class="card" hidden>
+    <h2>Layers</h2>
+    <div class="grid four" id="roles"></div>
+
+    <h2>Notch</h2>
+    <div class="grid four">
+      <label>Depth
+        <div class="unit"><input type="number" id="depth" value="2" min="0.01" step="0.1"><span>mm</span></div>
       </label>
       <label>Measured from
         <select id="depth-from">
-          <option value="bend-end">the bend line end</option>
-          <option value="edge">the material edge</option>
+          <option value="bend-end">Bend line end</option>
+          <option value="edge">Material edge</option>
         </select>
       </label>
-      <label>Notch shape
+      <label>Shape
         <select id="shape">
-          <option value="v">V (single apex)</option>
+          <option value="v">V</option>
           <option value="rect">Flat bottomed</option>
         </select>
       </label>
-      <label>Sheet thickness (mm, optional)
-        <input type="number" id="thickness" min="0.01" step="0.1" placeholder="—">
+      <label>Sheet thickness
+        <div class="unit"><input type="number" id="thickness" min="0.01" step="0.1" placeholder="optional"><span>mm</span></div>
       </label>
     </div>
 
     <details id="advanced">
-      <summary>Tolerances</summary>
-      <p class="hint">
-        Defaults suit a Fusion export: junction gaps land near 1e-10, and an extent line
-        either matches a profile vertex exactly or misses a corner fillet by about 0.005.
-      </p>
-      <div class="controls">
-        <label>Stitch tolerance <input type="number" id="stitch_tol" value="0.000001" step="0.000001"></label>
+      <summary>Advanced tolerances</summary>
+      <div class="grid four">
+        <label>Stitch <input type="number" id="stitch_tol" value="0.000001" step="0.000001"></label>
         <label>Vertex snap <input type="number" id="snap_tol" value="0.02" step="0.005"></label>
-        <label>Smallest fragment <input type="number" id="sliver_tol" value="0.05" step="0.01"></label>
-        <label>Flattening sagitta <input type="number" id="chord_tol" value="0.001" step="0.001"></label>
+        <label>Min fragment <input type="number" id="sliver_tol" value="0.05" step="0.01"></label>
+        <label>Curve sagitta <input type="number" id="chord_tol" value="0.001" step="0.001"></label>
         <label>Max stub <input type="number" id="max_stub" value="1" step="0.1"></label>
         <label class="checkbox"><input type="checkbox" id="merge_overlapping"> Allow overlapping cuts</label>
       </div>
     </details>
 
-    <button id="run" class="primary">Generate notches</button>
-    <p id="run-status" class="status" hidden></p>
+    <div class="actions">
+      <button id="run" class="primary">Generate notches</button>
+      <span id="run-error" class="status error" hidden></span>
+    </div>
   </section>
 
-  <section id="step-review" class="card wide" hidden>
-    <h2><span class="step">3</span> Review</h2>
-
-    <div class="viewbar">
+  <!-- step 3 -->
+  <section id="step-review" class="card" hidden>
+    <div class="review-head">
+      <h2 id="result-title">Result</h2>
       <div class="segmented" role="group" aria-label="View mode">
-        <button data-mode="split" class="active">Side by side</button>
+        <button data-mode="split" class="active">Split</button>
         <button data-mode="overlay">Overlay</button>
-        <button data-mode="after">Result only</button>
+        <button data-mode="after">Result</button>
       </div>
-      <div class="legend" id="legend"></div>
-      <button id="reset-view" class="ghost">Reset view</button>
+      <button id="reset-view" class="link">Reset view</button>
     </div>
 
     <div id="views" class="views split">
@@ -93,9 +113,13 @@
       </figure>
     </div>
 
-    <div class="summary" id="summary"></div>
+    <div class="legend" id="legend"></div>
     <div id="diagnostics"></div>
-    <a id="download" class="primary" hidden download>Download notched DXF</a>
+
+    <div class="actions">
+      <a id="download" class="primary" hidden download>Download DXF</a>
+      <span id="download-name" class="muted"></span>
+    </div>
   </section>
 </main>
 

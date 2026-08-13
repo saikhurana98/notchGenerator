@@ -58,6 +58,23 @@ def _sweep() -> None:
             continue
 
 
+def output_name(original: str) -> str:
+    """`part.dxf` becomes `part with notch.dxf`, so the download is recognisable."""
+    stem = Path(original).stem or "part"
+    return f"{stem} with notch.dxf"
+
+
+def _remember_name(directory: Path, name: str) -> None:
+    (directory / "original-name").write_text(name, encoding="utf-8")
+
+
+def _recall_name(directory: Path) -> str:
+    try:
+        return (directory / "original-name").read_text(encoding="utf-8").strip() or "part.dxf"
+    except OSError:
+        return "part.dxf"
+
+
 def _session_dir(session_id: str, create: bool = False) -> Path:
     # Session ids are minted here as hex UUIDs, so anything else is a traversal attempt.
     try:
@@ -109,6 +126,7 @@ async def upload(file: UploadFile) -> JSONResponse:
     directory = _session_dir(session_id, create=True)
     source = directory / "input.dxf"
     source.write_bytes(payload)
+    _remember_name(directory, name)
 
     try:
         found = pipeline.inspect(str(source))
@@ -142,17 +160,26 @@ def process(request: ProcessRequest) -> JSONResponse:
 
     body = result.as_dict()
     body["download_ready"] = output.exists()
+    body["download_name"] = output_name(_recall_name(directory))
     body["config"] = cfg.as_dict()
     return JSONResponse(body)
 
 
-@app.get("/api/download/{session_id}")
+# GET *and* HEAD: browsers probe a download with HEAD, and a 404 there leaves the transfer
+# showing its full byte count but never finishing.
+@app.api_route("/api/download/{session_id}", methods=["GET", "HEAD"])
 def download(session_id: str) -> FileResponse:
     directory = _session_dir(session_id)
     output = directory / "notched.dxf"
     if not output.exists():
         raise HTTPException(status_code=404, detail="nothing has been generated for this session")
-    return FileResponse(output, media_type="image/vnd.dxf", filename="notched.dxf")
+    return FileResponse(
+        output,
+        # A DXF is plain text; octet-stream is what keeps browsers from trying to display it.
+        media_type="application/octet-stream",
+        filename=output_name(_recall_name(directory)),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 if WEB_DIR is not None:

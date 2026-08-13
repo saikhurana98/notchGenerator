@@ -3,10 +3,10 @@
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const ROLES = [
-  { key: 'outer', label: 'Outer profile', help: 'The outline the notches are cut into.' },
-  { key: 'interior', label: 'Interior profiles', help: 'Holes and cutouts, passed through untouched.' },
-  { key: 'bend', label: 'Bend lines', help: 'One line per bend. Dropped from the output.' },
-  { key: 'extent', label: 'Bend extent lines', help: 'Two per bend. Dropped from the output.' },
+  { key: 'outer', label: 'Outer profile' },
+  { key: 'interior', label: 'Interior profiles' },
+  { key: 'bend', label: 'Bend lines' },
+  { key: 'extent', label: 'Bend extents' },
 ];
 
 const STROKE = {
@@ -14,10 +14,11 @@ const STROKE = {
   interior: { color: 'var(--interior)', width: 1.4, dash: null, label: 'Interior' },
   bend: { color: 'var(--bend)', width: 1.2, dash: '6 3', label: 'Bend line' },
   extent: { color: 'var(--extent)', width: 1, dash: '3 3', label: 'Bend extent' },
-  notch: { color: 'var(--notch)', width: 2.2, dash: null, label: 'New notch' },
+  notch: { color: 'var(--notch)', width: 2.4, dash: null, label: 'New notch' },
   ghost: { color: 'var(--ghost)', width: 1, dash: null, label: 'Original' },
 };
 
+const DRAW_ORDER = ['ghost', 'extent', 'bend', 'interior', 'outer', 'notch'];
 const TOLERANCE_FIELDS = ['stitch_tol', 'snap_tol', 'sliver_tol', 'chord_tol', 'max_stub'];
 
 const state = {
@@ -55,27 +56,40 @@ function wireUpload() {
     const file = e.dataTransfer?.files?.[0];
     if (file) upload(file);
   });
+
+  $('change-file').addEventListener('click', () => {
+    $('step-upload').hidden = false;
+    $('filebar').hidden = true;
+    $('step-map').hidden = true;
+    $('step-review').hidden = true;
+    input.value = '';
+  });
 }
 
 async function upload(file) {
-  setStatus('upload-status', `Reading ${file.name}…`);
-  const body = new FormData();
-  body.append('file', file);
+  hide('upload-error');
   try {
-    const data = await request('/api/upload', { method: 'POST', body });
+    const data = await request('/api/upload', { method: 'POST', body: withFile(file) });
     state.sessionId = data.session_id;
     state.layers = data.layers;
     state.before = data.geometry;
     state.bounds = data.bounds;
+
     renderRoles(data.suggested_mapping);
-    setStatus('upload-status', `${file.name} — ${data.layers.length} layers.`, 'ok');
+    $('filename').textContent = data.filename;
+    $('filebar').hidden = false;
+    $('step-upload').hidden = true;
     $('step-map').hidden = false;
     $('step-review').hidden = true;
-    renderDiagnostics(data.diagnostics);
-    $('step-map').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (err) {
-    setStatus('upload-status', err.message, 'error');
+    show('upload-error', err.message);
   }
+}
+
+function withFile(file) {
+  const body = new FormData();
+  body.append('file', file);
+  return body;
 }
 
 // ---------------------------------------------------------------- mapping
@@ -89,20 +103,13 @@ function renderRoles(suggested) {
 
     const select = document.createElement('select');
     select.id = `role-${role.key}`;
-    select.append(option('', '— none —'));
+    select.append(option('', 'None'));
     for (const layer of state.layers) {
-      const contents = Object.entries(layer.counts)
-        .map(([type, n]) => `${n}×${type}`)
-        .join(', ');
-      select.append(option(layer.name, `${layer.name} (${contents})`));
+      select.append(option(layer.name, `${layer.name} · ${layer.total}`));
     }
     select.value = suggested[role.key] || '';
 
-    const meta = document.createElement('span');
-    meta.className = 'role-meta';
-    meta.textContent = role.help;
-
-    label.append(select, meta);
+    label.append(select);
     host.append(label);
   }
 }
@@ -123,11 +130,9 @@ function readConfig() {
     shape: $('shape').value,
     merge_overlapping: $('merge_overlapping').checked,
   };
-  const thickness = $('thickness').value;
-  if (thickness !== '') cfg.thickness = Number(thickness);
+  if ($('thickness').value !== '') cfg.thickness = Number($('thickness').value);
   for (const field of TOLERANCE_FIELDS) {
-    const raw = $(field).value;
-    if (raw !== '') cfg[field] = Number(raw);
+    if ($(field).value !== '') cfg[field] = Number($(field).value);
   }
   return cfg;
 }
@@ -135,7 +140,8 @@ function readConfig() {
 async function run() {
   const button = $('run');
   button.disabled = true;
-  setStatus('run-status', 'Cutting notches…');
+  button.textContent = 'Working…';
+  hide('run-error');
   try {
     const data = await request('/api/process', {
       method: 'POST',
@@ -144,9 +150,10 @@ async function run() {
     });
     showResult(data);
   } catch (err) {
-    setStatus('run-status', err.message, 'error');
+    show('run-error', err.message);
   } finally {
     button.disabled = false;
+    button.textContent = 'Generate notches';
   }
 }
 
@@ -158,24 +165,23 @@ function showResult(data) {
   if (data.bounds) state.bounds = data.bounds;
 
   $('step-review').hidden = false;
-  const notches = data.notches?.length || 0;
+  const count = data.notches?.length || 0;
+  const removed = (data.area_before || 0) - (data.area_after || 0);
 
   if (data.ok) {
-    setStatus('run-status', `${notches} notch${notches === 1 ? '' : 'es'} cut.`, 'ok');
+    $('result-title').textContent =
+      count === 0
+        ? 'No notches were needed'
+        : `${count} notch${count === 1 ? '' : 'es'} · ${fmt(removed)} mm² removed`;
     $('download').hidden = !data.download_ready;
     $('download').href = `/api/download/${state.sessionId}`;
+    if (data.download_name) $('download').setAttribute('download', data.download_name);
+    $('download-name').textContent = data.download_name || '';
   } else {
-    setStatus('run-status', 'Could not generate a safe result — see below.', 'error');
+    $('result-title').textContent = 'Could not generate a safe result';
     $('download').hidden = true;
+    $('download-name').textContent = '';
   }
-
-  const removed = (data.area_before || 0) - (data.area_after || 0);
-  $('summary').innerHTML = data.ok
-    ? `<span>Notches <b>${notches}</b></span>
-       <span>Area before <b>${fmt(data.area_before)} mm²</b></span>
-       <span>Area after <b>${fmt(data.area_after)} mm²</b></span>
-       <span>Removed <b>${fmt(removed)} mm²</b></span>`
-    : '';
 
   renderDiagnostics(data.diagnostics);
   resetView();
@@ -185,15 +191,13 @@ function showResult(data) {
 function renderDiagnostics(items) {
   const host = $('diagnostics');
   host.replaceChildren();
-  const order = { error: 0, warn: 1, info: 2 };
-  for (const d of [...(items || [])].sort((a, b) => order[a.level] - order[b.level])) {
+  // Only things the user can act on. Progress notes stay in the CLI output.
+  const notable = (items || []).filter((d) => d.level === 'error' || d.level === 'warn');
+  notable.sort((a, b) => (a.level === b.level ? 0 : a.level === 'error' ? -1 : 1));
+  for (const d of notable) {
     const row = document.createElement('div');
     row.className = `diag ${d.level}`;
-    const code = document.createElement('code');
-    code.textContent = d.code;
-    const text = document.createElement('span');
-    text.textContent = d.message;
-    row.append(code, text);
+    row.textContent = d.message;
     host.append(row);
   }
 }
@@ -207,9 +211,12 @@ function fmt(n) {
 function drawInto(svg, layers) {
   svg.replaceChildren();
   const root = document.createElementNS(SVG_NS, 'g');
-  // DXF is y-up, SVG is y-down. Flipping here keeps every coordinate below in model space.
+  // DXF is y-up and SVG is y-down, so everything below stays in model coordinates.
   root.setAttribute('transform', 'scale(1,-1)');
-  for (const item of layers) {
+  const sorted = [...layers].sort(
+    (a, b) => DRAW_ORDER.indexOf(a.role) - DRAW_ORDER.indexOf(b.role),
+  );
+  for (const item of sorted) {
     if (!item.pts || item.pts.length < 2) continue;
     const style = STROKE[item.role] || STROKE.outer;
     const path = document.createElementNS(SVG_NS, 'polyline');
@@ -220,32 +227,31 @@ function drawInto(svg, layers) {
     path.setAttribute('stroke-linecap', 'round');
     path.setAttribute('vector-effect', 'non-scaling-stroke');
     if (style.dash) path.setAttribute('stroke-dasharray', style.dash);
-    if (item.role === 'ghost') path.setAttribute('opacity', '0.75');
     root.append(path);
   }
   svg.append(root);
 }
 
 function paint() {
-  const beforeLayers = state.before;
-  // The ghost is the original *outline* only. Overlaying the bend and extent lines too
-  // would bury the thing the overlay exists to show.
+  // The ghost is the original outline only; overlaying bend and extent lines as well would
+  // bury the thing the overlay exists to show.
   const ghost = state.before
     .filter((i) => i.role === 'outer' || i.role === 'interior')
     .map((i) => ({ ...i, role: 'ghost' }));
-  const afterLayers = state.mode === 'overlay' ? [...ghost, ...state.after] : state.after;
-  drawInto($('svg-before'), beforeLayers);
-  drawInto($('svg-after'), afterLayers.length ? afterLayers : beforeLayers);
+  const after = state.after.length ? state.after : state.before;
+  const shown = state.mode === 'overlay' ? [...ghost, ...state.after] : after;
+
+  drawInto($('svg-before'), state.before);
+  drawInto($('svg-after'), shown.length ? shown : state.before);
   applyView();
-  renderLegend(afterLayers.length ? afterLayers : beforeLayers);
+  renderLegend(state.mode === 'split' ? [...state.before, ...after] : shown);
 }
 
 function renderLegend(layers) {
   const roles = new Set(layers.map((i) => i.role));
-  if (state.mode === 'split') for (const i of state.before) roles.add(i.role);
   const host = $('legend');
   host.replaceChildren();
-  for (const role of ['outer', 'interior', 'bend', 'extent', 'notch', 'ghost']) {
+  for (const role of DRAW_ORDER) {
     if (!roles.has(role)) continue;
     const style = STROKE[role];
     const item = document.createElement('span');
@@ -262,7 +268,7 @@ function resetView() {
   const width = Math.max(b.max[0] - b.min[0], 1e-6);
   const height = Math.max(b.max[1] - b.min[1], 1e-6);
   const pad = 0.06 * Math.max(width, height);
-  // The y range is negated to match the scale(1,-1) applied when drawing.
+  // The y range is negated to match the scale(1,-1) used when drawing.
   state.home = {
     x: b.min[0] - pad,
     y: -(b.max[1] + pad),
@@ -279,7 +285,7 @@ function applyView() {
   for (const svg of [$('svg-before'), $('svg-after')]) {
     const box = svg.getBoundingClientRect();
     const aspect = box.height > 0 && box.width > 0 ? box.height / box.width : 0.75;
-    // Letterbox rather than distort: grow whichever dimension the panel needs.
+    // Letterbox rather than distort: grow whichever dimension this panel needs.
     let { x, y, w, h } = v;
     if (h / w < aspect) {
       const grown = w * aspect;
@@ -302,7 +308,8 @@ function wireViewControls() {
       }
       state.mode = button.dataset.mode;
       $('views').className = `views ${state.mode}`;
-      paint();
+      // The panels change shape between modes, so the letterboxing has to be redone.
+      requestAnimationFrame(paint);
     });
   }
   $('reset-view').addEventListener('click', resetView);
@@ -332,7 +339,7 @@ function onWheel(event, svg) {
   if (!at) return;
   const factor = Math.exp(event.deltaY * 0.0015);
   const v = state.view;
-  // Zoom about the cursor, so the point under it stays put.
+  // Zoom about the cursor, so whatever is under it stays put.
   state.view = {
     x: at.x - (at.x - v.x) * factor,
     y: at.y - (at.y - v.y) * factor,
@@ -344,8 +351,7 @@ function onWheel(event, svg) {
 
 function onDragStart(event, svg) {
   if (event.button !== 0 || !state.view) return;
-  const start = modelPoint(event, svg);
-  if (!start) return;
+  if (!modelPoint(event, svg)) return;
   const origin = { ...state.view };
   svg.setPointerCapture(event.pointerId);
   svg.classList.add('dragging');
@@ -381,16 +387,27 @@ async function request(url, options) {
     /* fall through to the status text below */
   }
   if (!response.ok) {
-    throw new Error(body?.detail || `${response.status} ${response.statusText}`);
+    throw new Error(detailOf(body) || `${response.status} ${response.statusText}`);
   }
   return body;
 }
 
-function setStatus(id, message, kind) {
+function detailOf(body) {
+  const detail = body?.detail;
+  if (typeof detail === 'string') return detail;
+  // FastAPI validation errors arrive as a list of objects.
+  if (Array.isArray(detail)) return detail.map((d) => d.msg || String(d)).join('; ');
+  return null;
+}
+
+function show(id, message) {
   const el = $(id);
   el.hidden = false;
   el.textContent = message;
-  el.className = `status${kind ? ` ${kind}` : ''}`;
+}
+
+function hide(id) {
+  $(id).hidden = true;
 }
 
 wireUpload();

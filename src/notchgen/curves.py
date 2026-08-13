@@ -24,6 +24,38 @@ def _xy(p) -> Point:
     return np.array([float(p.x), float(p.y)])
 
 
+# ARC, CIRCLE and LWPOLYLINE store their geometry in an object coordinate system derived
+# from the entity's extrusion vector, not in world coordinates. Fusion writes an extrusion
+# of (0,0,-1) whenever the flat pattern comes off the far face of the sheet, and in that
+# OCS the x axis is mirrored — so reading dxf.center straight off the entity puts a hole on
+# the wrong side of the part. LINE and SPLINE have no OCS and are always world coordinates,
+# which is why an unfixed profile stays put while its holes jump.
+_PLUS_Z, _MINUS_Z, _ARBITRARY = "+z", "-z", "arbitrary"
+
+
+def _extrusion_kind(entity) -> str:
+    if not entity.dxf.hasattr("extrusion"):
+        return _PLUS_Z
+    ex, ey, ez = (float(c) for c in entity.dxf.extrusion)
+    if abs(ex) < 1e-9 and abs(ey) < 1e-9:
+        return _PLUS_Z if ez > 0 else _MINUS_Z
+    return _ARBITRARY
+
+
+def _mirror_x(p: Point) -> Point:
+    """OCS to WCS for an extrusion of (0,0,-1): the x axis points the other way."""
+    return np.array([-float(p[0]), float(p[1])])
+
+
+def _flattened_wcs(entity, eid: int, chord_tol: float = 1e-4) -> "PolylineCurve":
+    """World-coordinate fallback for geometry that does not lie in the XY plane."""
+    import ezdxf.path
+
+    path = ezdxf.path.make_path(entity)
+    pts = np.array([[v.x, v.y] for v in path.flattening(chord_tol)])
+    return PolylineCurve(eid, None, pts)
+
+
 @dataclass
 class Curve:
     """One profile curve. Subclasses implement the geometry."""
@@ -238,27 +270,53 @@ def curves_from_entity(entity, eid: int) -> list[Curve]:
     if kind == "SPLINE":
         return [SplineCurve(eid, entity, entity.construction_tool())]
     if kind == "ARC":
+        extrusion = _extrusion_kind(entity)
+        if extrusion is _ARBITRARY:
+            return [_flattened_wcs(entity, eid)]
         a0 = math.radians(entity.dxf.start_angle)
         a1 = math.radians(entity.dxf.end_angle)
         sweep = (a1 - a0) % (2 * math.pi)
         if sweep == 0:
             sweep = 2 * math.pi
-        return [ArcCurve(eid, entity, _xy(entity.dxf.center), float(entity.dxf.radius), a0, sweep)]
+        center = _xy(entity.dxf.center)
+        if extrusion == _MINUS_Z:
+            # Mirroring x maps an OCS angle t to pi - t, which also reverses the sweep.
+            center = _mirror_x(center)
+            a0, sweep = math.pi - a0, -sweep
+        return [ArcCurve(eid, entity, center, float(entity.dxf.radius), a0, sweep)]
     if kind == "ELLIPSE":
+        # An ELLIPSE keeps its centre and axes in world coordinates, so no OCS to undo.
         pts = np.array([[p.x, p.y] for p in entity.flattening(1e-4)])
         return [PolylineCurve(eid, entity, pts)]
     if kind in ("LWPOLYLINE", "POLYLINE"):
+        if _extrusion_kind(entity) is _ARBITRARY:
+            return [_flattened_wcs(entity, eid)]
         out: list[Curve] = []
+        # Exploded arcs inherit the polyline's extrusion and stay in OCS, so the recursion
+        # is what corrects them; exploded lines come back already in world coordinates.
         for sub in entity.virtual_entities():
             out.extend(curves_from_entity(sub, eid))
         for c in out:
             c.src = None  # exploded pieces are no longer the whole entity
         return out
     if kind == "CIRCLE":
+        extrusion = _extrusion_kind(entity)
+        if extrusion is _ARBITRARY:
+            return [_flattened_wcs(entity, eid)]
         c = _xy(entity.dxf.center)
+        if extrusion == _MINUS_Z:
+            c = _mirror_x(c)
         r = float(entity.dxf.radius)
         return [
             ArcCurve(eid, None, c, r, 0.0, math.pi),
             ArcCurve(eid, None, c, r, math.pi, math.pi),
         ]
+    if kind == "INSERT":
+        # Block references carry their own placement transform; virtual_entities applies it.
+        out = []
+        for sub in entity.virtual_entities():
+            out.extend(curves_from_entity(sub, eid))
+        for c in out:
+            c.src = None
+        return out
     raise UnsupportedEntity(kind)

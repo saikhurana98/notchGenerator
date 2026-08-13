@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import ezdxf
 import numpy as np
@@ -240,9 +241,10 @@ def write_result(
             doc.layers.remove(layer)
 
     doc.saveas(out_path)
+    # Only the basename goes into the report — the full path is a server detail that has no
+    # business being shown in the browser.
     report.info(
         "written",
-        f"Wrote {out_path} with {len(list(msp))} entities on "
+        f"Wrote {Path(out_path).name}: {len(list(msp))} entities on "
         f"{len({e.dxf.layer for e in msp})} layer(s).",
-        path=out_path,
     )

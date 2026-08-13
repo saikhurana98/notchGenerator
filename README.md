@@ -78,7 +78,19 @@ For each bend line, and for each of its two endpoints:
 Untouched entities are copied through unchanged, so surviving splines keep their exact original
 control points. Only an entity the cut actually crosses is ever split.
 
-Bend and bend-extent layers are dropped from the output.
+Bend and bend-extent layers are dropped from the output. The download is named after the file you
+uploaded, with ` with notch` appended — `bracket.dxf` comes back as `bracket with notch.dxf`.
+
+### Object coordinate systems
+
+`ARC`, `CIRCLE` and `LWPOLYLINE` store their geometry relative to the entity's extrusion vector
+rather than in world coordinates, and Fusion writes an extrusion of `(0,0,-1)` whenever the flat
+pattern comes off the far face of the sheet. In that coordinate system the x axis is mirrored, so
+reading a centre point straight off the entity puts the hole on the wrong side of the part. `LINE`
+and `SPLINE` have no such system, which is why getting this wrong leaves the outer profile correctly
+placed while every hole jumps. notchgen undoes the mirror exactly, keeping arcs as arcs, and falls
+back to world-coordinate flattening for the rare entity that is not in the XY plane at all. Block
+references are expanded through their placement transform.
 
 ### Notch shape
 
@@ -142,7 +154,7 @@ src/notchgen/
   api.py        FastAPI routes and the session store
   cli.py        command line entry point
 web/            the portal: one page, no build step, no dependencies
-tests/          46 tests, including regressions pinned to the sample file
+tests/          64 tests, including regressions pinned to the sample file
 ```
 
 ## Development
