@@ -3,3 +3,6 @@
 *.service text eol=lf
 *.conf text eol=lf
 *.yml text eol=lf
+
+# Fonts are binary; text=auto must never touch them.
+*.woff2 binary

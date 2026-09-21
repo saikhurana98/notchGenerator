@@ -73,8 +73,17 @@ Hovering a layer lights it up in the view and dims everything else, so you can s
 about to call the outer profile before committing to it; clicking keeps it lit. **Apply to all**
 copies the current file's mapping onto every other open file sharing those layer names.
 
+The view stays a single pane until there is something to compare; once a run has happened it
+splits into before and after, side by side on a wide screen and stacked — before over after — on a
+tall one.
+
 **Generate notches** runs the whole batch. The download button then hands back a single DXF, or a
 zip of every result when there is more than one; each tab also offers its own file.
+
+The portal is dark by default and carries a light mode; the choice is remembered per browser. It is
+drawn in the Dotmatrix design system — green-tinted near-blacks, one accent, one paper, with Doto,
+Instrument Sans and JetBrains Mono self-hosted under `web/fonts/` so it looks right on a LAN with no
+route to the internet.
 
 ## Quick start (CLI)
 

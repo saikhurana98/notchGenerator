@@ -4,6 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>notchgen</title>
+  <!-- Settle the theme before first paint, or a light-mode user gets a dark flash. -->
+  <script>
+    try {
+      document.documentElement.dataset.theme =
+        localStorage.getItem('notchgen-theme') === 'light' ? 'light' : 'dark';
+    } catch { document.documentElement.dataset.theme = 'dark'; }
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,17 +18,18 @@
 <!-- ------------------------------------------------------------------ top bar -->
 <header class="topbar">
   <div class="brand">
-    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M2 17h6l4-9 4 9h6" fill="none" stroke="currentColor" stroke-width="2.2"
-            stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
+    <i class="mark" aria-hidden="true"></i>
     <span class="wordmark">notchgen</span>
   </div>
   <div class="docname" id="docname">No document</div>
   <div class="topbar-actions">
     <span class="chip" id="build-chip" hidden></span>
-    <button id="add-files" class="btn ghost" disabled>
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+    <button id="theme" class="icon-btn" title="Switch to light mode" aria-label="Switch theme">
+      <svg id="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg>
+    </button>
+    <button id="add-files" class="btn" disabled>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
       Add files
     </button>
     <button id="run" class="btn primary" disabled>Generate notches</button>
@@ -32,7 +40,6 @@
 <!-- ------------------------------------------------------------------ body -->
 <main class="shell">
 
-  <!-- left: feature tree, then the feature dialog, as Onshape stacks them -->
   <aside class="panel" id="left">
 
     <section class="card" id="card-layers">
@@ -46,9 +53,9 @@
       <p class="hint" id="tree-hint" hidden>Hover a layer to highlight it. Click to keep it highlighted.</p>
     </section>
 
-    <section class="card dialog" id="card-params">
+    <section class="card" id="card-params">
       <div class="dialog-head">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12h4l2-7 2 7h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <i class="dot" aria-hidden="true"></i>
         <span>Bend relief</span>
       </div>
       <div class="dialog-body">
@@ -99,9 +106,8 @@
     </section>
   </aside>
 
-  <!-- right: graphics area -->
   <section class="graphics" id="graphics">
-    <div class="views" id="views">
+    <div class="views single" id="views">
       <figure class="view" id="fig-before">
         <figcaption>Before</figcaption>
         <svg id="svg-before" role="img" aria-label="Original outline"></svg>
@@ -118,24 +124,24 @@
               fill="none" stroke="currentColor" stroke-width="1.6"
               stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
-      <strong>Drop flat-pattern DXF files here</strong>
-      <span>or click to browse &mdash; several at once is fine</span>
+      <strong>Drop flat-pattern DXF files</strong>
+      <span>or click to browse &mdash; several at once</span>
       <input type="file" id="file" accept=".dxf" multiple hidden>
     </div>
 
     <div class="status-chip" id="status-chip" hidden></div>
 
     <div class="viewbar" id="viewbar" hidden>
-      <div class="segmented" role="group" aria-label="View mode">
+      <div class="segmented" id="segmented" role="group" aria-label="View mode" hidden>
         <button data-mode="split" class="active">Split</button>
         <button data-mode="overlay">Overlay</button>
         <button data-mode="after">Result</button>
       </div>
-      <button id="reset-view" class="btn ghost small" title="Zoom to fit (F)">Fit</button>
+      <button id="reset-view" class="btn small" title="Zoom to fit (F)">Fit</button>
       <div class="legend" id="legend"></div>
     </div>
 
-    <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text">Working…</span></div>
+    <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text">Working</span></div>
   </section>
 </main>
 

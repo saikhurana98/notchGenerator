@@ -13,13 +13,14 @@ const ROLES = [
 // Only bend lines legitimately live on more than one layer: Onshape splits them UP/DOWN.
 const MULTI = new Set(['bend']);
 
+// Label, and the token the swatch borrows so the legend tracks the theme.
 const LEGEND = {
-  outer: 'Outer profile',
-  interior: 'Interior',
-  bend: 'Bend line',
-  extent: 'Bend extent',
-  notch: 'New notch',
-  ghost: 'Original',
+  outer: ['Outer', '--text-1'],
+  interior: ['Interior', '--text-2'],
+  bend: ['Bend', '--text-3'],
+  extent: ['Extent', '--text-4'],
+  notch: ['Notch', '--accent'],
+  ghost: ['Original', '--border-hover'],
 };
 const DRAW_ORDER = ['', 'ghost', 'extent', 'bend', 'interior', 'outer', 'notch'];
 
@@ -449,16 +450,38 @@ function drawInto(svg, items) {
   svg.append(root);
 }
 
+/* Which panes are on screen, and how they are split.
+
+   There is nothing to compare until a run has happened, so until then it is one full-bleed
+   view. Once there is a result, a wide area puts before beside after and a tall one stacks
+   them, before over after. The area is measured rather than queried through a media query,
+   because what matters is the shape of the graphics pane, not of the window. */
+function layout() {
+  const file = active();
+  const done = Boolean(file?.result?.ok && file.result.after?.length);
+  const mode = done ? state.mode : 'single';
+  const box = $('graphics');
+  const portrait = box.clientHeight > box.clientWidth;
+  $('views').className = `views ${mode}` + (mode === 'split' && portrait ? ' portrait' : '');
+  $('segmented').hidden = !done;
+  return mode;
+}
+
 function paint() {
   const file = active();
-  if (!file || !file.geometry) return clearCanvas();
+  if (!file || !file.geometry) {
+    clearCanvas();
+    layout();
+    return;
+  }
 
   const before = file.geometry.map((i) => ({ ...i, role: roleFor(file, i) }));
   const result = file.result;
   const after = result?.ok && result.after?.length ? result.after : null;
+  const mode = layout();
 
   let shown;
-  if (state.mode === 'overlay' && after) {
+  if (mode === 'overlay' && after) {
     const ghost = before
       .filter((i) => i.role === 'outer' || i.role === 'interior')
       .map((i) => ({ ...i, role: 'ghost', layer: undefined }));
@@ -470,7 +493,7 @@ function paint() {
   drawInto($('svg-before'), before);
   drawInto($('svg-after'), shown);
   applyView();
-  renderLegend(state.mode === 'split' ? [...before, ...shown] : shown);
+  renderLegend(mode === 'single' ? before : mode === 'split' ? [...before, ...shown] : shown);
   preview(state.hover || state.picked, state.picked && !state.hover);
 }
 
@@ -498,10 +521,11 @@ function renderLegend(items) {
   host.replaceChildren();
   for (const role of DRAW_ORDER) {
     if (!roles.has(role)) continue;
+    const [label, token] = LEGEND[role];
     const item = el('span');
     const swatch = el('i');
-    swatch.style.color = `var(--${role})`;
-    item.append(swatch, document.createTextNode(LEGEND[role]));
+    swatch.style.color = `var(${token})`;
+    item.append(swatch, document.createTextNode(label));
     host.append(item);
   }
 }
@@ -553,13 +577,17 @@ function wireView() {
         other.classList.toggle('active', other === button);
       }
       state.mode = button.dataset.mode;
-      $('views').className = `views ${state.mode}`;
-      // The panels change shape between modes, so the letterboxing has to be redone.
+      // The panes change shape between modes, so the letterboxing has to be redone.
       requestAnimationFrame(paint);
     });
   }
   $('reset-view').addEventListener('click', resetView);
-  window.addEventListener('resize', applyView);
+  // Resizing can flip the split between side-by-side and stacked, so re-run the layout —
+  // but not the redraw, which would be wasteful during a window drag.
+  window.addEventListener('resize', () => {
+    layout();
+    applyView();
+  });
 
   document.addEventListener('keydown', (e) => {
     if (e.target.matches('input, select, textarea')) return;
@@ -699,8 +727,34 @@ async function showBuild() {
   }
 }
 
+// ---------------------------------------------------------------- theme
+
+const SUN =
+  '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2' +
+  'M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+const MOON = '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
+
+function wireTheme() {
+  const button = $('theme');
+  const apply = (theme) => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem('notchgen-theme', theme);
+    } catch {
+      /* a private window just does not remember the choice */
+    }
+    // The button shows what it will switch you to, not what you are on.
+    $('theme-icon').innerHTML = theme === 'light' ? MOON : SUN;
+    button.title = theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode';
+  };
+  apply(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  button.addEventListener('click', () =>
+    apply(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'));
+}
+
 wireUpload();
 wireView();
 wireApplyAll();
+wireTheme();
 $('run').addEventListener('click', run);
 showBuild();
