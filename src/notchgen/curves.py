@@ -307,10 +307,11 @@ def curves_from_entity(entity, eid: int) -> list[Curve]:
         if extrusion == _MINUS_Z:
             c = _mirror_x(c)
         r = float(entity.dxf.radius)
-        return [
-            ArcCurve(eid, None, c, r, 0.0, math.pi),
-            ArcCurve(eid, None, c, r, math.pi, math.pi),
-        ]
+        # One full-sweep arc that starts and ends at the same point: a closed loop all by
+        # itself, and still the whole entity, so an untouched hole is written back as the
+        # CIRCLE it came in as. Onshape keeps its holes on the cut layer with the outline,
+        # so circles do go through the stitcher.
+        return [ArcCurve(eid, entity, c, r, 0.0, 2.0 * math.pi)]
     if kind == "INSERT":
         # Block references carry their own placement transform; virtual_entities applies it.
         out = []

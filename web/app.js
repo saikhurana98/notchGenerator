@@ -3,271 +3,514 @@
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const ROLES = [
+  { key: '', label: '—' },
   { key: 'outer', label: 'Outer profile' },
   { key: 'interior', label: 'Interior profiles' },
   { key: 'bend', label: 'Bend lines' },
   { key: 'extent', label: 'Bend extents' },
 ];
 
-const STROKE = {
-  outer: { color: 'var(--outer)', width: 1.6, dash: null, label: 'Outer profile' },
-  interior: { color: 'var(--interior)', width: 1.4, dash: null, label: 'Interior' },
-  bend: { color: 'var(--bend)', width: 1.2, dash: '6 3', label: 'Bend line' },
-  extent: { color: 'var(--extent)', width: 1, dash: '3 3', label: 'Bend extent' },
-  notch: { color: 'var(--notch)', width: 2.4, dash: null, label: 'New notch' },
-  ghost: { color: 'var(--ghost)', width: 1, dash: null, label: 'Original' },
-};
+// Only bend lines legitimately live on more than one layer: Onshape splits them UP/DOWN.
+const MULTI = new Set(['bend']);
 
-const DRAW_ORDER = ['ghost', 'extent', 'bend', 'interior', 'outer', 'notch'];
-const TOLERANCE_FIELDS = [
-  'stitch_tol', 'snap_tol', 'sliver_tol', 'chord_tol', 'bridge_tol', 'max_stub',
+const LEGEND = {
+  outer: 'Outer profile',
+  interior: 'Interior',
+  bend: 'Bend line',
+  extent: 'Bend extent',
+  notch: 'New notch',
+  ghost: 'Original',
+};
+const DRAW_ORDER = ['', 'ghost', 'extent', 'bend', 'interior', 'outer', 'notch'];
+
+const TOLERANCES = [
+  'stitch_tol', 'snap_tol', 'sliver_tol', 'chord_tol', 'bridge_tol', 'max_stub', 'bend_zone',
 ];
 
 const state = {
   sessionId: null,
-  layers: [],
-  before: [],
-  after: [],
-  bounds: null,
+  files: [],
+  activeId: null,
+  mode: 'split',
   view: null,
   home: null,
-  mode: 'split',
+  hover: null,
+  picked: null,
 };
 
 const $ = (id) => document.getElementById(id);
+const active = () => state.files.find((f) => f.id === state.activeId) || null;
 
-// ---------------------------------------------------------------- upload
+// ---------------------------------------------------------------- uploading
 
 function wireUpload() {
-  const zone = $('dropzone');
   const input = $('file');
+  const open = (append) => {
+    input.dataset.append = append ? '1' : '';
+    input.click();
+  };
 
-  zone.addEventListener('click', () => input.click());
-  zone.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); }
+  $('dropzone').addEventListener('click', () => open(false));
+  $('dropzone').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      open(false);
+    }
   });
-  input.addEventListener('change', () => input.files[0] && upload(input.files[0]));
+  $('add-files').addEventListener('click', () => open(true));
+  $('add-tab').addEventListener('click', () => open(true));
 
-  for (const event of ['dragenter', 'dragover']) {
-    zone.addEventListener(event, (e) => { e.preventDefault(); zone.classList.add('hot'); });
-  }
-  for (const event of ['dragleave', 'drop']) {
-    zone.addEventListener(event, (e) => { e.preventDefault(); zone.classList.remove('hot'); });
-  }
-  zone.addEventListener('drop', (e) => {
-    const file = e.dataTransfer?.files?.[0];
-    if (file) upload(file);
-  });
-
-  $('change-file').addEventListener('click', () => {
-    $('step-upload').hidden = false;
-    $('filebar').hidden = true;
-    $('step-map').hidden = true;
-    $('step-review').hidden = true;
+  input.addEventListener('change', () => {
+    if (input.files.length) upload(input.files, input.dataset.append === '1');
     input.value = '';
   });
+
+  // Dropping anywhere adds to the open batch; the first drop starts one.
+  let depth = 0;
+  const overlay = $('drop-overlay');
+  window.addEventListener('dragenter', (e) => {
+    if (![...e.dataTransfer.types].includes('Files')) return;
+    depth += 1;
+    overlay.hidden = false;
+  });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) overlay.hidden = true;
+  });
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    depth = 0;
+    overlay.hidden = true;
+    if (e.dataTransfer.files.length) upload(e.dataTransfer.files, Boolean(state.sessionId));
+  });
 }
 
-async function upload(file) {
-  hide('upload-error');
-  try {
-    const data = await request('/api/upload', { method: 'POST', body: withFile(file) });
-    state.sessionId = data.session_id;
-    state.layers = data.layers;
-    state.before = data.geometry;
-    state.bounds = data.bounds;
+async function upload(fileList, append) {
+  const chosen = [...fileList];
+  busy(`Reading ${chosen.length} file${chosen.length === 1 ? '' : 's'}…`);
+  const body = new FormData();
+  for (const f of chosen) body.append('file', f);
+  const url = append && state.sessionId
+    ? `/api/upload?session=${encodeURIComponent(state.sessionId)}`
+    : '/api/upload';
 
-    renderRoles(data.suggested_mapping);
-    $('filename').textContent = data.filename;
-    $('filebar').hidden = false;
-    $('step-upload').hidden = true;
-    $('step-map').hidden = false;
-    $('step-review').hidden = true;
+  try {
+    const data = await request(url, { method: 'POST', body });
+    if (!append || !state.sessionId) {
+      state.files = [];
+      state.sessionId = data.session_id;
+    }
+    for (const item of data.files) state.files.push(toFile(item));
+    const unreadable = data.files.filter((f) => !f.ok);
+    if (unreadable.length) {
+      toast(unreadable.map((f) => `${f.filename}: ${f.error}`).join(' · '));
+    }
+    $('dropzone').hidden = true;
+    $('tabbar').hidden = false;
+    $('viewbar').hidden = false;
+    $('add-files').disabled = false;
+    $('run').disabled = false;
+    renderTabs();
+    select(state.files.find((f) => f.ok && f.id === data.files.find((d) => d.ok).file_id).id);
   } catch (err) {
-    show('upload-error', err.message);
+    toast(err.message);
+  } finally {
+    idle();
   }
 }
 
-function withFile(file) {
-  const body = new FormData();
-  body.append('file', file);
-  return body;
+function toFile(item) {
+  const file = {
+    id: item.file_id,
+    name: item.filename,
+    ok: Boolean(item.ok),
+    error: item.error || '',
+    layers: item.layers || [],
+    geometry: item.geometry || null,
+    bounds: item.bounds || null,
+    diagnostics: item.diagnostics || [],
+    roleOf: {},
+    result: null,
+  };
+  for (const [role, layers] of Object.entries(item.suggested_mapping || {})) {
+    for (const layer of Array.isArray(layers) ? layers : layers ? [layers] : []) {
+      file.roleOf[layer] = role;
+    }
+  }
+  return file;
 }
 
-// ---------------------------------------------------------------- mapping
+// ---------------------------------------------------------------- tabs
 
-function renderRoles(suggested) {
-  const host = $('roles');
+function renderTabs() {
+  const host = $('tabs');
   host.replaceChildren();
-  for (const role of ROLES) {
-    const label = document.createElement('label');
-    label.textContent = role.label;
+  for (const file of state.files) {
+    const tab = document.createElement('button');
+    tab.className = 'tab' + (file.id === state.activeId ? ' active' : '');
+    tab.title = file.name;
+
+    const dot = document.createElement('i');
+    dot.className = `dot ${statusOf(file)}`;
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = file.name.replace(/\.dxf$/i, '');
+
+    tab.append(dot, label);
+    tab.addEventListener('click', () => select(file.id));
+    host.append(tab);
+  }
+  const readable = state.files.filter((f) => f.ok).length;
+  $('docname').textContent =
+    readable === state.files.length
+      ? `${state.files.length} file${state.files.length === 1 ? '' : 's'}`
+      : `${readable} of ${state.files.length} files readable`;
+}
+
+function statusOf(file) {
+  if (!file.ok) return 'bad';
+  if (!file.result) return '';
+  if (!file.result.ok) return 'bad';
+  return file.result.diagnostics?.some((d) => d.level === 'warn') ? 'warn' : 'ok';
+}
+
+async function select(id) {
+  state.activeId = id;
+  state.picked = null;
+  state.hover = null;
+  renderTabs();
+
+  const file = active();
+  if (!file) return;
+  if (!file.ok) {
+    $('tree').replaceChildren(el('p', 'empty', file.error || 'This file could not be read.'));
+    $('tree-hint').hidden = true;
+    clearCanvas();
+    return;
+  }
+  if (!file.geometry) {
+    busy(`Loading ${file.name}…`);
+    try {
+      const data = await request(`/api/geometry/${state.sessionId}/${file.id}`);
+      file.geometry = data.geometry;
+      file.bounds = data.bounds;
+    } catch (err) {
+      toast(err.message);
+      return;
+    } finally {
+      idle();
+    }
+    if (file.id !== id) return; // the user moved on while this was in flight
+  }
+  renderTree();
+  renderResult(file);
+  resetView();
+}
+
+// ---------------------------------------------------------------- layer tree
+
+function renderTree() {
+  const file = active();
+  const host = $('tree');
+  host.replaceChildren();
+  $('tree-hint').hidden = false;
+  $('apply-all').hidden = state.files.filter((f) => f.ok).length < 2;
+
+  for (const info of file.layers) {
+    const role = file.roleOf[info.name] || '';
+    const row = el('div', 'layer');
+    row.dataset.role = role;
+    row.dataset.layer = info.name;
+
+    const contents = Object.entries(info.counts || {})
+      .sort()
+      .map(([type, n]) => `${n}×${type}`)
+      .join(', ');
+
+    const name = el('div', 'name', info.name);
+    name.title = info.name;
+    const meta = el('div', 'meta', contents);
+    meta.title = contents;
 
     const select = document.createElement('select');
-    select.id = `role-${role.key}`;
-    select.append(option('', 'None'));
-    for (const layer of state.layers) {
-      select.append(option(layer.name, `${layer.name} · ${layer.total}`));
+    for (const option of ROLES) {
+      const o = document.createElement('option');
+      o.value = option.key;
+      o.textContent = option.label;
+      select.append(o);
     }
-    select.value = suggested[role.key] || '';
+    select.value = role;
+    select.addEventListener('change', () => setRole(info.name, select.value));
+    // The row's own hover/click handlers must not fight the dropdown.
+    select.addEventListener('mousedown', (e) => e.stopPropagation());
 
-    label.append(select);
-    host.append(label);
+    row.append(el('i', 'swatch'), name, meta, select);
+    row.addEventListener('mouseenter', () => preview(info.name, false));
+    row.addEventListener('mouseleave', () => preview(null, false));
+    row.addEventListener('click', () => {
+      state.picked = state.picked === info.name ? null : info.name;
+      renderTree();
+      preview(state.picked, true);
+    });
+    if (state.picked === info.name) row.classList.add('selected');
+    host.append(row);
   }
 }
 
-function option(value, text) {
-  const el = document.createElement('option');
-  el.value = value;
-  el.textContent = text;
-  return el;
+function setRole(layer, role) {
+  const file = active();
+  if (role && !MULTI.has(role)) {
+    // Outer, interior and extent each name exactly one layer, so pointing a role at a new
+    // layer takes it off whichever layer held it before.
+    for (const [name, held] of Object.entries(file.roleOf)) {
+      if (held === role && name !== layer) delete file.roleOf[name];
+    }
+  }
+  if (role) file.roleOf[layer] = role;
+  else delete file.roleOf[layer];
+  file.result = null;
+  renderTree();
+  renderTabs();
+  paint();
 }
+
+function mappingOf(file) {
+  const mapping = {};
+  for (const [layer, role] of Object.entries(file.roleOf)) {
+    if (!role) continue;
+    if (MULTI.has(role)) (mapping[role] = mapping[role] || []).push(layer);
+    else mapping[role] = layer;
+  }
+  if (Array.isArray(mapping.bend) && mapping.bend.length === 1) mapping.bend = mapping.bend[0];
+  return mapping;
+}
+
+function wireApplyAll() {
+  $('apply-all').addEventListener('click', () => {
+    const source = active();
+    if (!source) return;
+    let changed = 0;
+    for (const file of state.files) {
+      if (file === source || !file.ok) continue;
+      const names = new Set(file.layers.map((l) => l.name));
+      const next = {};
+      for (const [layer, role] of Object.entries(source.roleOf)) {
+        if (names.has(layer)) next[layer] = role;
+      }
+      if (Object.keys(next).length) {
+        file.roleOf = next;
+        file.result = null;
+        changed += 1;
+      }
+    }
+    toast(changed ? `Mapping copied to ${changed} other file(s).` : 'No other file shares these layer names.');
+    renderTabs();
+  });
+}
+
+// ---------------------------------------------------------------- running
 
 function readConfig() {
   const cfg = {
     session_id: state.sessionId,
-    mapping: Object.fromEntries(ROLES.map((r) => [r.key, $(`role-${r.key}`).value])),
+    mapping: {},
+    mappings: {},
     depth: Number($('depth').value),
     depth_from: $('depth-from').value,
     shape: $('shape').value,
     merge_overlapping: $('merge_overlapping').checked,
     single_layer: $('single_layer').checked,
   };
+  for (const file of state.files) {
+    if (file.ok) cfg.mappings[file.id] = mappingOf(file);
+  }
   if ($('thickness').value !== '') cfg.thickness = Number($('thickness').value);
-  for (const field of TOLERANCE_FIELDS) {
+  for (const field of TOLERANCES) {
     if ($(field).value !== '') cfg[field] = Number($(field).value);
   }
   return cfg;
 }
 
 async function run() {
-  const button = $('run');
-  button.disabled = true;
-  button.textContent = 'Working…';
-  hide('run-error');
+  const count = state.files.filter((f) => f.ok).length;
+  busy(count > 1 ? `Notching ${count} files…` : 'Generating notches…');
+  $('run').disabled = true;
   try {
     const data = await request('/api/process', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(readConfig()),
     });
-    showResult(data);
+    for (const result of data.files || []) {
+      const file = state.files.find((f) => f.id === result.file_id);
+      if (file) file.result = result;
+    }
+    renderTabs();
+    renderDownload(data);
+    const file = active();
+    if (file) {
+      renderResult(file);
+      paint();
+    }
+    if (data.failed) {
+      toast(`${data.succeeded} of ${data.succeeded + data.failed} file(s) produced a result.`);
+    }
   } catch (err) {
-    show('run-error', err.message);
+    toast(err.message);
   } finally {
-    button.disabled = false;
-    button.textContent = 'Generate notches';
+    $('run').disabled = false;
+    idle();
   }
 }
 
-// ---------------------------------------------------------------- result
+function renderDownload(data) {
+  const link = $('download');
+  const ready = state.files.filter((f) => f.result?.download_ready).length;
+  link.hidden = !data.download_ready || !ready;
+  if (link.hidden) return;
+  link.href = `/api/download/${state.sessionId}`;
+  link.setAttribute('download', data.download_name || '');
+  link.textContent = ready > 1 ? `Download all (${ready})` : 'Download';
+}
 
-function showResult(data) {
-  state.after = data.after || [];
-  if (data.before?.length) state.before = data.before;
-  if (data.bounds) state.bounds = data.bounds;
+function renderResult(file) {
+  const chip = $('status-chip');
+  const result = file.result;
+  chip.replaceChildren();
 
-  $('step-review').hidden = false;
-  const count = data.notches?.length || 0;
-  const removed = (data.area_before || 0) - (data.area_after || 0);
-
-  if (data.ok) {
-    $('result-title').textContent =
-      count === 0
-        ? 'No notches were needed'
-        : `${count} notch${count === 1 ? '' : 'es'} · ${fmt(removed)} mm² removed`;
-    $('download').hidden = !data.download_ready;
-    $('download').href = `/api/download/${state.sessionId}`;
-    if (data.download_name) $('download').setAttribute('download', data.download_name);
-    $('download-name').textContent = data.download_name || '';
+  if (!result) {
+    chip.hidden = true;
   } else {
-    $('result-title').textContent = 'Could not generate a safe result';
-    $('download').hidden = true;
-    $('download-name').textContent = '';
+    chip.hidden = false;
+    chip.classList.toggle('bad', !result.ok);
+    const count = result.notches?.length || 0;
+    const removed = (result.area_before || 0) - (result.area_after || 0);
+    chip.append(
+      document.createTextNode(
+        result.ok
+          ? count
+            ? `${count} notch${count === 1 ? '' : 'es'} · ${fmt(removed)} mm² removed`
+            : 'No notches were needed'
+          : 'No safe result for this file',
+      ),
+    );
+    if (result.download_ready && state.files.filter((f) => f.result?.download_ready).length > 1) {
+      const one = document.createElement('a');
+      one.href = `/api/download/${state.sessionId}/${file.id}`;
+      one.setAttribute('download', result.download_name || '');
+      one.className = 'link';
+      one.style.marginLeft = '8px';
+      one.textContent = 'this file';
+      chip.append(one);
+    }
   }
-
-  renderDiagnostics(data.diagnostics);
-  resetView();
-  $('step-review').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  renderDiagnostics((result || file).diagnostics);
 }
 
 function renderDiagnostics(items) {
   const host = $('diagnostics');
   host.replaceChildren();
-  // Only things the user can act on. Progress notes stay in the CLI output.
+  // Only what the user can act on. Progress notes belong in the CLI output.
   const notable = (items || []).filter((d) => d.level === 'error' || d.level === 'warn');
   notable.sort((a, b) => (a.level === b.level ? 0 : a.level === 'error' ? -1 : 1));
+  $('card-diagnostics').hidden = !notable.length;
   for (const d of notable) {
-    const row = document.createElement('div');
-    row.className = `diag ${d.level}`;
-    row.textContent = d.message;
+    const row = el('div', `diag ${d.level}`, d.message);
     host.append(row);
   }
 }
 
-function fmt(n) {
-  return (n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
-}
-
 // ---------------------------------------------------------------- drawing
 
-function drawInto(svg, layers) {
+function roleFor(file, item) {
+  // The server tags the source geometry with the mapping it guessed; the user may have
+  // changed it since, so the layer is what counts here.
+  return item.layer !== undefined ? file.roleOf[item.layer] || '' : item.role || '';
+}
+
+function drawInto(svg, items) {
   svg.replaceChildren();
   const root = document.createElementNS(SVG_NS, 'g');
   // DXF is y-up and SVG is y-down, so everything below stays in model coordinates.
   root.setAttribute('transform', 'scale(1,-1)');
-  const sorted = [...layers].sort(
+  const sorted = [...items].sort(
     (a, b) => DRAW_ORDER.indexOf(a.role) - DRAW_ORDER.indexOf(b.role),
   );
   for (const item of sorted) {
     if (!item.pts || item.pts.length < 2) continue;
-    const style = STROKE[item.role] || STROKE.outer;
-    const path = document.createElementNS(SVG_NS, 'polyline');
-    path.setAttribute('points', item.pts.map(([x, y]) => `${x},${y}`).join(' '));
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', style.color);
-    path.setAttribute('stroke-width', style.width);
-    path.setAttribute('stroke-linecap', 'round');
-    path.setAttribute('vector-effect', 'non-scaling-stroke');
-    if (style.dash) path.setAttribute('stroke-dasharray', style.dash);
-    root.append(path);
+    const line = document.createElementNS(SVG_NS, 'polyline');
+    line.setAttribute('points', item.pts.map(([x, y]) => `${x},${y}`).join(' '));
+    line.setAttribute('vector-effect', 'non-scaling-stroke');
+    line.dataset.role = item.role;
+    if (item.layer) line.dataset.layer = item.layer;
+    root.append(line);
   }
   svg.append(root);
 }
 
 function paint() {
-  // The ghost is the original outline only; overlaying bend and extent lines as well would
-  // bury the thing the overlay exists to show.
-  const ghost = state.before
-    .filter((i) => i.role === 'outer' || i.role === 'interior')
-    .map((i) => ({ ...i, role: 'ghost' }));
-  const after = state.after.length ? state.after : state.before;
-  const shown = state.mode === 'overlay' ? [...ghost, ...state.after] : after;
+  const file = active();
+  if (!file || !file.geometry) return clearCanvas();
 
-  drawInto($('svg-before'), state.before);
-  drawInto($('svg-after'), shown.length ? shown : state.before);
+  const before = file.geometry.map((i) => ({ ...i, role: roleFor(file, i) }));
+  const result = file.result;
+  const after = result?.ok && result.after?.length ? result.after : null;
+
+  let shown;
+  if (state.mode === 'overlay' && after) {
+    const ghost = before
+      .filter((i) => i.role === 'outer' || i.role === 'interior')
+      .map((i) => ({ ...i, role: 'ghost', layer: undefined }));
+    shown = [...ghost, ...after];
+  } else {
+    shown = after || before;
+  }
+
+  drawInto($('svg-before'), before);
+  drawInto($('svg-after'), shown);
   applyView();
-  renderLegend(state.mode === 'split' ? [...state.before, ...after] : shown);
+  renderLegend(state.mode === 'split' ? [...before, ...shown] : shown);
+  preview(state.hover || state.picked, state.picked && !state.hover);
 }
 
-function renderLegend(layers) {
-  const roles = new Set(layers.map((i) => i.role));
+function clearCanvas() {
+  drawInto($('svg-before'), []);
+  drawInto($('svg-after'), []);
+  $('legend').replaceChildren();
+}
+
+function preview(layer, picked) {
+  state.hover = picked ? null : layer;
+  for (const svg of [$('svg-before'), $('svg-after')]) {
+    svg.classList.toggle('previewing', Boolean(layer));
+    for (const line of svg.querySelectorAll('polyline')) {
+      const match = Boolean(layer) && line.dataset.layer === layer;
+      line.classList.toggle('preview', match && !picked);
+      line.classList.toggle('picked', match && Boolean(picked));
+    }
+  }
+}
+
+function renderLegend(items) {
+  const roles = new Set(items.map((i) => i.role).filter((r) => r && LEGEND[r]));
   const host = $('legend');
   host.replaceChildren();
   for (const role of DRAW_ORDER) {
     if (!roles.has(role)) continue;
-    const style = STROKE[role];
-    const item = document.createElement('span');
-    const swatch = document.createElement('i');
-    swatch.style.color = style.color;
-    if (style.dash) swatch.style.borderTopStyle = 'dashed';
-    item.append(swatch, document.createTextNode(style.label));
+    const item = el('span');
+    const swatch = el('i');
+    swatch.style.color = `var(--${role})`;
+    item.append(swatch, document.createTextNode(LEGEND[role]));
     host.append(item);
   }
 }
 
+// ---------------------------------------------------------------- view
+
 function resetView() {
-  const b = state.bounds || { min: [0, 0], max: [1, 1] };
+  const file = active();
+  const b = file?.bounds || { min: [0, 0], max: [1, 1] };
   const width = Math.max(b.max[0] - b.min[0], 1e-6);
   const height = Math.max(b.max[1] - b.min[1], 1e-6);
   const pad = 0.06 * Math.max(width, height);
@@ -303,7 +546,7 @@ function applyView() {
   }
 }
 
-function wireViewControls() {
+function wireView() {
   for (const button of document.querySelectorAll('.segmented button')) {
     button.addEventListener('click', () => {
       for (const other of document.querySelectorAll('.segmented button')) {
@@ -317,6 +560,16 @@ function wireViewControls() {
   }
   $('reset-view').addEventListener('click', resetView);
   window.addEventListener('resize', applyView);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target.matches('input, select, textarea')) return;
+    if (e.key === 'Escape' && state.picked) {
+      state.picked = null;
+      renderTree();
+      preview(null, false);
+    }
+    if (e.key === 'f' || e.key === 'F') resetView();
+  });
 
   for (const svg of [$('svg-before'), $('svg-after')]) {
     svg.addEventListener('wheel', (e) => onWheel(e, svg), { passive: false });
@@ -403,16 +656,51 @@ function detailOf(body) {
   return null;
 }
 
-function show(id, message) {
-  const el = $(id);
-  el.hidden = false;
-  el.textContent = message;
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
 }
 
-function hide(id) {
-  $(id).hidden = true;
+function fmt(n) {
+  return (n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+let toastTimer = null;
+function toast(message) {
+  const node = $('toast');
+  node.textContent = message;
+  node.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (node.hidden = true), 7000);
+}
+
+function busy(text) {
+  $('busy-text').textContent = text;
+  $('busy').hidden = false;
+}
+
+function idle() {
+  $('busy').hidden = true;
+}
+
+async function showBuild() {
+  try {
+    const info = await request('/api/version');
+    if (info.version && info.version !== 'dev') {
+      const chip = $('build-chip');
+      chip.textContent = info.version;
+      chip.title = `revision ${info.revision}`;
+      chip.hidden = false;
+    }
+  } catch {
+    /* the portal works fine without a build stamp */
+  }
 }
 
 wireUpload();
-wireViewControls();
+wireView();
+wireApplyAll();
 $('run').addEventListener('click', run);
+showBuild();

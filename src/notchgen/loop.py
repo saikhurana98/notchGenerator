@@ -170,6 +170,17 @@ class Loop:
         return out
 
 
+def _arc_midpoint(pts: np.ndarray) -> Point:
+    seg = np.hypot(*np.diff(pts, axis=0).T)
+    total = seg.sum()
+    if total == 0:
+        return pts[0].copy()
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    i = int(np.clip(np.searchsorted(cum, 0.5 * total) - 1, 0, len(pts) - 2))
+    f = 0.0 if seg[i] == 0 else (0.5 * total - cum[i]) / seg[i]
+    return pts[i] + f * (pts[i + 1] - pts[i])
+
+
 def drop_duplicate_curves(
     curves: list[Curve], tol: float, chord_tol: float = 1e-3
 ) -> tuple[list[Curve], list[Curve], list[Curve]]:
@@ -182,16 +193,22 @@ def drop_duplicate_curves(
     kept: list[Curve] = []
     duplicates: list[Curve] = []
     degenerate: list[Curve] = []
-    signatures: list[tuple[Point, Point, float]] = []
+    signatures: list[tuple[Point, Point, Point, float]] = []
     for c in curves:
         a, b = c.start(), c.end()
         length = c.length(chord_tol)
         if length <= tol and norm(b - a) <= tol:
             degenerate.append(c)
             continue
+        # The midpoint tells apart two equal arcs bulging opposite ways between the same
+        # endpoints — the two halves of a slot end or of a hole — which are not duplicates.
+        # Taken at half the arc length rather than at t=0.5, so a copy that is parametrised
+        # differently from the original still lands on the same point.
+        mid = _arc_midpoint(c.flatten(chord_tol))
+        mid_tol = max(tol, 10.0 * chord_tol)
         match = False
-        for sa, sb, slen in signatures:
-            if abs(slen - length) > max(tol, 1e-9):
+        for sa, sb, smid, slen in signatures:
+            if abs(slen - length) > max(tol, 1e-9) or norm(smid - mid) > mid_tol:
                 continue
             same = norm(sa - a) <= tol and norm(sb - b) <= tol
             flipped = norm(sa - b) <= tol and norm(sb - a) <= tol
@@ -201,7 +218,7 @@ def drop_duplicate_curves(
         if match:
             duplicates.append(c)
         else:
-            signatures.append((a, b, length))
+            signatures.append((a, b, mid, length))
             kept.append(c)
     return kept, duplicates, degenerate
 
@@ -226,7 +243,9 @@ def build_loops(
         seed = remaining.pop(0)
         links = [Link(seed, flipped=False)]
         worst = 0.0
-        while True:
+        # A circle closes on itself; nothing may be chained onto it.
+        self_closed = norm(seed.end() - seed.start()) <= stitch_tol
+        while not self_closed:
             tail = links[-1].end()
             best = None
             for k, c in enumerate(remaining):

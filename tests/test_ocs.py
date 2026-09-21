@@ -25,6 +25,14 @@ def sampled(entity, eid=0, chord_tol=1e-3) -> np.ndarray:
     return np.vstack([c.flatten(chord_tol) for c in curves_from_entity(entity, eid)])
 
 
+def centre_of(pts: np.ndarray) -> np.ndarray:
+    """Mean of a ring's vertices, not counting the closing point a full circle repeats."""
+    pts = np.asarray(pts, dtype=float)
+    if len(pts) > 2 and np.allclose(pts[0], pts[-1]):
+        pts = pts[:-1]
+    return pts.mean(axis=0)
+
+
 def reference(entity, chord_tol=1e-4) -> np.ndarray:
     """What ezdxf itself says the entity's world-coordinate geometry is."""
     return np.array([(v.x, v.y) for v in ezdxf.path.make_path(entity).flattening(chord_tol)])
@@ -77,7 +85,7 @@ def test_a_flipped_hole_is_not_mirrored_onto_the_wrong_side(msp):
     """The regression itself: a hole centred at x=+30 must not land at x=-30."""
     flipped = msp.add_circle((-30.0, 27.0), 4.0, dxfattribs=FLIPPED)
     pts = sampled(flipped)
-    centre = pts.mean(axis=0)
+    centre = centre_of(pts)
     assert centre[0] == pytest.approx(30.0, abs=1e-3)
     assert centre[1] == pytest.approx(27.0, abs=1e-3)
     assert np.hypot(*(pts - centre).T).mean() == pytest.approx(4.0, abs=2e-3)
@@ -95,7 +103,7 @@ def test_a_block_reference_is_placed_at_its_insertion_point(msp):
     block.add_circle((0.0, 0.0), 3.0)
     insert = msp.add_blockref("HOLE", (12.0, 34.0))
     pts = sampled(insert)
-    centre = pts.mean(axis=0)
+    centre = centre_of(pts)
     assert centre[0] == pytest.approx(12.0, abs=1e-3)
     assert centre[1] == pytest.approx(34.0, abs=1e-3)
 
@@ -127,7 +135,7 @@ def test_holes_render_on_the_same_side_as_the_profile(tmp_path):
     after = np.array(
         [p for item in result.after if item["role"] == "interior" for p in item["pts"]]
     )
-    assert after.mean(axis=0)[0] == pytest.approx(30.0, abs=1e-3)
+    assert centre_of(after)[0] == pytest.approx(30.0, abs=1e-3)
 
 
 def test_the_sample_holes_sit_where_the_file_says(sample_path):

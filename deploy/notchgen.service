@@ -1,0 +1,26 @@
+[Unit]
+Description=notchgen portal
+Documentation=https://github.com/saikhurana98/notchGenerator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=notchgen
+Group=notchgen
+WorkingDirectory=/opt/notchgen/app
+# Written by deploy.sh: the version and revision the portal reports at /api/version.
+EnvironmentFile=-/opt/notchgen/env
+Environment=NOTCHGEN_DATA=/srv/notchgen-data
+ExecStart=/opt/notchgen/app/.venv/bin/uvicorn notchgen.api:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=2
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=no
+ReadWritePaths=/srv/notchgen-data /opt/notchgen
+
+[Install]
+WantedBy=multi-user.target

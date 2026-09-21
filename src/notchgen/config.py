@@ -52,6 +52,20 @@ class Config:
     symmetry_tol_rel: float = 0.05
     """A bend line sits mid-zone, so |s_left| and |s_right| must agree."""
 
+    bend_zone: float | None = None
+    """Full width of the bend zone, for a file with no extent layer.
+
+    An Onshape export only carries tangent lines when they were switched on. Without them
+    the zone is read off the outline, which has a vertex wherever a tangent line would
+    have met the edge; this overrides that."""
+
+    max_zone: float = 30.0
+    """Widest bend zone looked for when reading it off the outline."""
+
+    max_setback: float = 2.5
+    """How far behind the bend end a bend-zone vertex may sit when reading the zone off
+    the outline."""
+
     max_stub: float = 1.0
     """Beyond this, the bend end is not reaching a free edge and we skip it."""
 

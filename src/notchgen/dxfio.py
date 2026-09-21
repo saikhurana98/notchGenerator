@@ -27,12 +27,41 @@ from .report import Report
 
 ROLES = ("outer", "interior", "bend", "extent")
 
+# Onshape writes SHEETMETAL_CUT_LINES, SHEETMETAL_BEND_LINES_UP / _DOWN and — only when
+# tangent lines were switched on for the export — SHEETMETAL_BEND_TANGENT_LI, the name cut
+# short at 26 characters by Onshape itself.
 _PATTERNS = {
-    "outer": (r"^outer", r"outer.*profile", r"^out\b", r"profile"),
+    "outer": (r"^outer", r"outer.*profile", r"^out\b", r"profile", r"cut[_\- ]?lines?$"),
     "interior": (r"^interior", r"^inner", r"interior.*profile", r"^hole"),
-    "bend": (r"^bend$", r"^bend[_\- ]?lines?$", r"^bends$"),
-    "extent": (r"extent", r"bend.*zone", r"tangent"),
+    "bend": (
+        r"^bend$",
+        r"^bend[_\- ]?lines?$",
+        r"^bends$",
+        r"bend[_\- ]?lines?[_\- ](up|down)$",
+    ),
+    "extent": (r"extent", r"bend.*tangent", r"bend.*zone", r"tangent"),
 }
+
+# Roles that may be spread over several layers: Onshape splits bend lines by direction.
+_MULTI_LAYER_ROLES = ("bend",)
+
+_ONSHAPE_PREFIX = "SHEETMETAL_"
+
+Mapping = dict[str, "str | list[str] | None"]
+
+
+def layers_for(mapping: Mapping, role: str) -> list[str]:
+    """The layers a role is mapped to. A role is usually one layer but may be several."""
+    value = mapping.get(role)
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return [v for v in value if v]
+
+
+def _as_layers(layers: "str | list[str]") -> set[str]:
+    return {layers} if isinstance(layers, str) else set(layers)
 
 # Most specific first: "BEND_EXTENT" must be claimed before anything reaches for "BEND",
 # and "INTERIOR_PROFILES" before the loose "profile" pattern that finds the outer layer.
@@ -67,19 +96,24 @@ def layer_census(doc) -> list[LayerInfo]:
 def suggest_mapping(layers: list[LayerInfo]) -> dict[str, str | None]:
     """Guess which layer plays which role, by name first and by structure afterwards."""
     names = [i.name for i in layers]
-    out: dict[str, str | None] = {r: None for r in ROLES}
+    out: Mapping = {r: None for r in ROLES}
     taken: set[str] = set()
     for role in _MATCH_ORDER:
         for pattern in _PATTERNS[role]:
-            for name in names:
-                if name in taken:
-                    continue
-                if re.search(pattern, name, re.IGNORECASE):
-                    out[role] = name
-                    taken.add(name)
-                    break
-            if out[role]:
-                break
+            hits = [
+                name
+                for name in names
+                if name not in taken and re.search(pattern, name, re.IGNORECASE)
+            ]
+            if not hits:
+                continue
+            if role in _MULTI_LAYER_ROLES and len(hits) > 1:
+                out[role] = hits
+                taken.update(hits)
+            else:
+                out[role] = hits[0]
+                taken.add(hits[0])
+            break
 
     # Structure, when the names give nothing away: every bend has exactly two extent
     # lines, so the extent layer holds twice the lines of the bend layer.
@@ -102,7 +136,10 @@ def suggest_mapping(layers: list[LayerInfo]) -> dict[str, str | None]:
         out["outer"] = leftovers[0].name
         taken.add(leftovers[0].name)
         leftovers = leftovers[1:]
-    if out["interior"] is None and leftovers:
+    # An Onshape export keeps its holes on the cut layer alongside the outline, so whatever
+    # else is left over there (form marks, countersink symbols) is not interior geometry.
+    onshape = any(name.upper().startswith(_ONSHAPE_PREFIX) for name in names)
+    if out["interior"] is None and leftovers and not onshape:
         out["interior"] = leftovers[0].name
     return out
 
@@ -162,8 +199,8 @@ def collect_curves(doc, layer: str, report: Report) -> tuple[list[Curve], dict[i
     return curves, sources
 
 
-def segments_on_layer(doc, layer: str, report: Report):
-    """Straight segments on a layer, for the bend and extent layers.
+def segments_on_layer(doc, layer: "str | list[str]", report: Report):
+    """Straight segments on a layer (or several), for the bend and extent layers.
 
     Fusion does not always write these as LINE entities — a bend or extent can arrive as a
     two-vertex LWPOLYLINE, and several of them can share one polyline. Everything is routed
@@ -174,9 +211,11 @@ def segments_on_layer(doc, layer: str, report: Report):
 
     out = []
     curved = 0
+    wanted = _as_layers(layer)
     for eid, e in enumerate(doc.modelspace()):
-        if e.dxf.layer != layer:
+        if e.dxf.layer not in wanted:
             continue
+        layer = e.dxf.layer
         if e.dxftype() not in CURVE_TYPES:
             report.warn(
                 "unusable-on-bend-layer",
@@ -207,11 +246,12 @@ def segments_on_layer(doc, layer: str, report: Report):
                 if np.hypot(*(np.asarray(b) - np.asarray(a))) > 0:
                     out.append(Segment(np.asarray(a, dtype=float), np.asarray(b, dtype=float)))
     if curved:
+        label = ", ".join(sorted(wanted))
         report.warn(
             "curved-on-bend-layer",
-            f"Layer {layer!r} contains {curved} curved segment(s). A bend line and its extents "
+            f"Layer {label!r} contains {curved} curved segment(s). A bend line and its extents "
             f"have to be straight, so those were ignored.",
-            layer=layer,
+            layer=label,
             count=curved,
         )
     return out
@@ -227,6 +267,9 @@ def _add_curve(msp, curve: Curve, layer: str) -> None:
     elif isinstance(curve, ArcCurve):
         import math
 
+        if abs(curve.sweep) >= 2.0 * math.pi - 1e-9:
+            msp.add_circle(tuple(curve.center), curve.radius, dxfattribs=attribs)
+            return
         start = math.degrees(curve.start_angle) % 360
         end = math.degrees(curve.start_angle + curve.sweep) % 360
         if curve.sweep < 0:
@@ -249,8 +292,8 @@ def write_result(
 ) -> None:
     """Rewrite the document in place to hold only the notched outer profile and the holes."""
     msp = doc.modelspace()
-    outer_layer = mapping["outer"]
-    interior_layer = mapping.get("interior")
+    outer_layer = layers_for(mapping, "outer")[0]
+    interior_layer = next(iter(layers_for(mapping, "interior")), None)
     survivors = {c.eid for c in kept if c.is_whole}
 
     doomed = []
@@ -283,8 +326,8 @@ def write_result(
         for role, layer in (("outer", outer_layer), ("interior", interior_layer)):
             if layer and layer not in doc.layers:
                 doc.layers.add(layer, color=7 if role == "outer" else 5)
-    for layer in (mapping.get("bend"), mapping.get("extent")):
-        if layer and layer in doc.layers:
+    for layer in (*layers_for(mapping, "bend"), *layers_for(mapping, "extent")):
+        if layer in doc.layers and layer not in (outer_layer, interior_layer):
             doc.layers.remove(layer)
 
     # Fusion's own export carries invalid owner handles in its OBJECTS dictionaries. ezdxf

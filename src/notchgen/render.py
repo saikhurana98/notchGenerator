@@ -12,28 +12,53 @@ def polyline(pts: np.ndarray, decimals: int = 4) -> list[list[float]]:
     return [[round(float(x), decimals), round(float(y), decimals)] for x, y in pts]
 
 
-def curves_payload(curves: list[Curve], role: str, chord_tol: float) -> list[dict]:
-    return [
-        {"role": role, "pts": polyline(c.flatten(chord_tol))}
-        for c in curves
-        if len(c.flatten(chord_tol)) >= 2
-    ]
+def curves_payload(
+    curves: list[Curve], role: str, chord_tol: float, layer: str | None = None
+) -> list[dict]:
+    out = []
+    for c in curves:
+        pts = c.flatten(chord_tol)
+        if len(pts) < 2:
+            continue
+        item = {"role": role, "pts": polyline(pts)}
+        if layer is not None:
+            item["layer"] = layer
+        out.append(item)
+    return out
 
 
-def document_payload(doc, mapping: dict[str, str | None], chord_tol: float) -> list[dict]:
-    """Every mapped layer in the source document, flattened and tagged with its role."""
-    role_of = {layer: role for role, layer in mapping.items() if layer}
+def roles_of(mapping: dict) -> dict[str, str]:
+    """Layer name -> role. A role may name several layers, and a layer may fill only one."""
+    out: dict[str, str] = {}
+    for role, layers in (mapping or {}).items():
+        for layer in [layers] if isinstance(layers, str) else layers or []:
+            # First role wins, so a layer shared by outer and interior draws as the outline.
+            out.setdefault(layer, role)
+    return out
+
+
+def document_payload(
+    doc, mapping: dict, chord_tol: float, include_unmapped: bool = False
+) -> list[dict]:
+    """The source document flattened, each piece tagged with its layer and its role.
+
+    `include_unmapped` keeps layers no role points at, with an empty role. The portal wants
+    those: it draws every layer so that picking a different one for a role is an instant
+    recolour rather than another round trip.
+    """
+    role_of = roles_of(mapping)
     out: list[dict] = []
     sink = Report()
     for eid, e in enumerate(doc.modelspace()):
-        role = role_of.get(e.dxf.layer)
-        if role is None:
+        layer = e.dxf.layer
+        role = role_of.get(layer)
+        if role is None and not include_unmapped:
             continue
         try:
             pieces = curves_from_entity(e, eid)
         except UnsupportedEntity:
             continue
-        out.extend(curves_payload(pieces, role, chord_tol))
+        out.extend(curves_payload(pieces, role or "", chord_tol, layer=layer))
     _ = sink
     return out
 

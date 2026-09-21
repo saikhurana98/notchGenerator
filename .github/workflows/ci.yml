@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --dev --frozen
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Frontend syntax
+        run: node --check web/app.js
+
+      - name: Shell syntax
+        run: bash -n deploy/deploy.sh deploy/bootstrap.sh install.sh
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, notchgen]
+    # Two deploys at once would race over /opt/notchgen/app.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish
+        run: |
+          chmod +x deploy/deploy.sh
+          ./deploy/deploy.sh
+
+      - name: Smoke test through nginx
+        run: |
+          set -e
+          curl -fsS --max-time 5 http://127.0.0.1/healthz
+          curl -fsS --max-time 5 http://127.0.0.1/api/version
+          # The portal itself has to be served, not just the API.
+          curl -fsS --max-time 5 http://127.0.0.1/ | grep -q 'notchgen'
+          echo "ok"

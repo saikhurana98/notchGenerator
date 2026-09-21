@@ -8,3 +8,6 @@ __pycache__/
 
 # The working copy of the sample lives in samples/; this is the original drop point.
 /front_suspension*.dxf
+
+# Editor and agent tooling, not part of the project.
+.claude/

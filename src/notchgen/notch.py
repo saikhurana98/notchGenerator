@@ -134,7 +134,9 @@ def _extent_end(pair: BendPair, side, P: Point, cfg: Config, report: Report, lab
     b_along = dot2(side.extent.b - pair.mid, d)
     E = side.extent.a if (a_along * want > b_along * want) else side.extent.b
     skew = abs(dot2(E - P, d))
-    if skew > cfg.max_endpoint_skew:
+    # A stand-in extent ends on the outline vertex it was read from, so a set-back there is
+    # the shape of the part rather than a sign of a mismatched line.
+    if skew > cfg.max_endpoint_skew and not side.extent.inferred:
         report.warn(
             "extent-end-skew",
             f"{label}: the extent line ends {skew:.4f} away from the bend end along the "
@@ -168,14 +170,32 @@ def build_notch(
         ref = max(_forward_param(a_left.point, P, u), _forward_param(a_right.point, P, u))
     else:
         ref = 0.0
-    apex = P + u * (ref - cfg.depth)
+    along = ref - cfg.depth
+
+    # The edge does not always cross the bend zone square-on: one shoulder can sit well
+    # behind the bend line's end, and a shallow notch measured from that end would then put
+    # its apex outboard of the shoulder — no relief at all on that side, and a cut that
+    # crosses itself. The depth is a promise about how far the relief reaches into the
+    # material, so it is kept relative to whichever shoulder is furthest in.
+    innermost = min(_forward_param(p, P, u) for p in (a_left.point, a_right.point))
+    if innermost - cfg.depth < along - 1e-9:
+        report.info(
+            "apex-deepened",
+            f"{label}: one shoulder of the notch sits {-innermost:.4f} behind the bend line's "
+            f"end, so the apex was placed {cfg.depth:g} inboard of that shoulder rather than "
+            f"of the {'edge' if cfg.depth_from == 'edge' else 'bend end'}.",
+            bend=pair.index,
+            setback=-innermost,
+        )
+        along = innermost - cfg.depth
+    apex = P + u * along
 
     for name, anchor, E in (("left", a_left, E_left), ("right", a_right, E_right)):
         if _forward_param(anchor.point, apex, u) <= 0:
             report.error(
                 "notch-inverted",
-                f"{label}: the {name} shoulder is not outboard of the apex — depth "
-                f"{cfg.depth} is too large for this flange and the cut would self-cross.",
+                f"{label}: the {name} shoulder is not outboard of the apex, so the cut would "
+                f"self-cross.",
                 bend=pair.index,
             )
             return None

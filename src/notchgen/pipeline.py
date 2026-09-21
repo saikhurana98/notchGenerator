@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import dxfio, render
-from .bends import pair_bends
+from .bends import infer_extents, pair_bends
 from .config import Config
-from .geom import cross2, dot2, norm
+from .geom import cross2, dot2, norm, point_in_polygon
 from .curves import LineCurve, SplineCurve
 from .loop import build_loops, drop_duplicate_curves
 from .notch import Notch, Surgery, build_all
@@ -41,7 +41,9 @@ class Result:
     after: list[dict] = field(default_factory=list)
     bounds: dict = field(default_factory=dict)
     doc: object | None = None
-    mapping: dict[str, str] = field(default_factory=dict)
+    mapping: dxfio.Mapping = field(default_factory=dict)
+    holes: list = field(default_factory=list)
+    """Interior profiles found on the outer layer, carried through to the output untouched."""
 
     @property
     def ok(self) -> bool:
@@ -137,8 +139,39 @@ def _skipped_hint(report: Report) -> str:
     )
 
 
-def _stitch_outer(outer_curves, cfg: Config, report: Report, bends=(), extents=()):
-    """Turn the outer-profile curves into one closed loop, or explain why we cannot."""
+def _split_holes(loops, cfg: Config):
+    """Pick the outline out of a layer that also carries the holes.
+
+    Returns (outline, holes) when the largest closed loop encloses everything else on the
+    layer, and None when it does not — two parts side by side, say — so the caller falls
+    through to the ordinary explanation of why the layer is not one outline.
+    """
+    closed = [lp for lp in loops if lp.closed]
+    # An open chain is never a hole. It is a broken outline, or a bend line on the wrong
+    # layer, and either way it needs explaining rather than copying through.
+    if not closed or len(closed) != len(loops):
+        return None
+    outline = max(closed, key=lambda lp: lp.area(cfg.chord_tol))
+    ring = outline.flatten(cfg.chord_tol)
+    lo, hi = ring.min(axis=0) - cfg.bridge_tol, ring.max(axis=0) + cfg.bridge_tol
+    holes = [lp for lp in loops if lp is not outline]
+    for lp in holes:
+        pts = lp.flatten(cfg.chord_tol)
+        if (pts < lo).any() or (pts > hi).any():
+            return None
+        if not point_in_polygon(pts[0], ring):
+            return None
+    return outline, holes
+
+
+def _stitch_outer(
+    outer_curves, cfg: Config, report: Report, bends=(), extents=(), allow_holes: bool = False
+):
+    """Turn the outer-profile curves into one closed loop, or explain why we cannot.
+
+    Returns (loop, hole_curves). `allow_holes` is for a layer that holds the interior
+    profiles as well as the outline, which is how Onshape exports a flat pattern.
+    """
     curves, duplicates, degenerate = drop_duplicate_curves(
         outer_curves, cfg.stitch_tol, cfg.chord_tol
     )
@@ -166,13 +199,22 @@ def _stitch_outer(outer_curves, cfg: Config, report: Report, bends=(), extents=(
     for tol in attempts:
         loops, worst_gap = build_loops(curves, tol, cfg.bridge_tol)
         used_tol = tol
-        if len(loops) == 1 and loops[0].closed:
+        if all(lp.closed for lp in loops) and (allow_holes or len(loops) == 1):
             break
     closed = [lp for lp in loops if lp.closed]
 
+    split = None
     if len(closed) == 1 and len(loops) == 1:
-        loop = closed[0]
-        slack = max(loop.bridged, worst_gap if used_tol > cfg.stitch_tol else 0.0)
+        split = (closed[0], [])
+    elif allow_holes:
+        split = _split_holes(loops, cfg)
+
+    if split is not None:
+        loop, holes = split
+        slack = max(
+            max(lp.bridged for lp in (loop, *holes)),
+            worst_gap if used_tol > cfg.stitch_tol else 0.0,
+        )
         if slack:
             _report_gap(report, slack, cfg)
         report.info(
@@ -182,7 +224,14 @@ def _stitch_outer(outer_curves, cfg: Config, report: Report, bends=(), extents=(
             curves=len(loop),
             worst_gap=worst_gap,
         )
-        return loop
+        if holes:
+            report.info(
+                "holes-on-outer-layer",
+                f"The outer layer also holds {len(holes)} interior profile(s); the largest "
+                f"closed outline was taken as the outer profile and the rest kept as they are.",
+                holes=len(holes),
+            )
+        return loop, [lk.curve for lp in holes for lk in lp.links]
 
     # Failure. Report the number that actually explains it — the closure gap and where the
     # loose ends are — rather than the junction gap, which is usually perfect.
@@ -203,7 +252,7 @@ def _stitch_outer(outer_curves, cfg: Config, report: Report, bends=(), extents=(
             open_at=[start, end],
             curves=len(chain),
         )
-        return None
+        return None, []
 
     detail = ", ".join(
         f"{len(lp)} curve(s) {'closed' if lp.closed else f'open by {lp.close_gap:.4g}'}"
@@ -220,7 +269,7 @@ def _stitch_outer(outer_curves, cfg: Config, report: Report, bends=(), extents=(
         closed=len(closed),
         worst_gap=worst_gap,
     )
-    return None
+    return None, []
 
 
 def inspect(path: str, chord_tol: float = 1e-3) -> Inspection:
@@ -231,9 +280,28 @@ def inspect(path: str, chord_tol: float = 1e-3) -> Inspection:
     layers = dxfio.layer_census(doc)
     suggested = dxfio.suggest_mapping(layers)
     mapping = {k: v for k, v in suggested.items() if v}
-    geometry = render.document_payload(doc, mapping, chord_tol)
+    # Every layer, not just the mapped ones: the portal draws them all so that pointing a
+    # role at a different layer is an instant recolour rather than another round trip.
+    geometry = render.document_payload(doc, mapping, chord_tol, include_unmapped=True)
     for role in dxfio.ROLES:
-        if not suggested.get(role):
+        if suggested.get(role):
+            continue
+        if role == "extent" and suggested.get("bend"):
+            # Normal for Onshape, which only writes tangent lines when asked to.
+            report.info(
+                "no-extent-layer",
+                "No bend-extent (tangent line) layer found; the bend zone will be read off "
+                "the outline instead.",
+                role=role,
+            )
+        elif role == "interior" and suggested.get("outer"):
+            report.info(
+                "no-interior-layer",
+                "No separate interior-profile layer found; any holes on the outer layer are "
+                "kept as they are.",
+                role=role,
+            )
+        else:
             report.warn(
                 "unmapped-role",
                 f"Could not guess which layer holds the {role} geometry; pick it manually.",
@@ -242,32 +310,35 @@ def inspect(path: str, chord_tol: float = 1e-3) -> Inspection:
     return Inspection(layers, suggested, geometry, render.bounds(geometry), report)
 
 
-def process(path: str, mapping: dict[str, str], cfg: Config) -> Result:
+def process(path: str, mapping: dxfio.Mapping, cfg: Config) -> Result:
     report = Report()
     doc = dxfio.read(path)
     dxfio.check_units(doc, report)
 
     present = {i.name for i in dxfio.layer_census(doc)}
+    # The extent layer is optional: without one the bend zone is read off the outline.
     for role in ("outer", "bend", "extent"):
-        layer = mapping.get(role)
-        if not layer:
+        layers = dxfio.layers_for(mapping, role)
+        if not layers and role != "extent":
             report.error("missing-role", f"No layer chosen for the {role} geometry.", role=role)
-        elif layer not in present:
-            report.error(
-                "unknown-layer",
-                f"Layer {layer!r} chosen for {role} holds no entities in this file.",
-                role=role,
-                layer=layer,
-            )
+        for layer in layers:
+            if layer not in present:
+                report.error(
+                    "unknown-layer",
+                    f"Layer {layer!r} chosen for {role} holds no entities in this file.",
+                    role=role,
+                    layer=layer,
+                )
     result = Result(report=report, mapping=dict(mapping), doc=doc)
     result.before = render.document_payload(doc, mapping, cfg.chord_tol)
     result.bounds = render.bounds(result.before)
     if report.has_errors:
         return result
 
-    outer_curves, _ = dxfio.collect_curves(doc, mapping["outer"], report)
+    outer_layer = dxfio.layers_for(mapping, "outer")[0]
+    outer_curves, _ = dxfio.collect_curves(doc, outer_layer, report)
     if not outer_curves:
-        report.error("empty-outer", f"Layer {mapping['outer']!r} contains no profile geometry.")
+        report.error("empty-outer", f"Layer {outer_layer!r} contains no profile geometry.")
         return result
 
     for c in outer_curves:
@@ -281,17 +352,43 @@ def process(path: str, mapping: dict[str, str], cfg: Config) -> Result:
                     deviation=dev,
                 )
 
-    bends = dxfio.segments_on_layer(doc, mapping["bend"], report)
-    extents = dxfio.segments_on_layer(doc, mapping["extent"], report)
+    bends = dxfio.segments_on_layer(doc, dxfio.layers_for(mapping, "bend"), report)
+    extent_layers = dxfio.layers_for(mapping, "extent")
+    extents = dxfio.segments_on_layer(doc, extent_layers, report) if extent_layers else []
 
-    loop = _stitch_outer(outer_curves, cfg, report, bends, extents)
+    # Onshape keeps the holes on the same layer as the outline, so with no interior layer
+    # of its own the outer layer is allowed to carry them.
+    interior_layers = dxfio.layers_for(mapping, "interior")
+    shared = not interior_layers or outer_layer in interior_layers
+    loop, holes = _stitch_outer(outer_curves, cfg, report, bends, extents, allow_holes=shared)
     if loop is None:
         return result
+    result.holes = holes
+    if holes:
+        hole_ids = {id(c) for c in holes}
+        result.before = [
+            *[item for item in result.before if item["role"] != "outer"],
+            *render.curves_payload(
+                [c for c in outer_curves if id(c) not in hole_ids], "outer", cfg.chord_tol
+            ),
+            *render.curves_payload(holes, "interior", cfg.chord_tol),
+        ]
     if cfg.thickness and cfg.depth < cfg.thickness:
         report.warn(
             "depth-under-thickness",
             f"A notch depth of {cfg.depth} is less than the sheet thickness "
             f"{cfg.thickness}; the relief may be too shallow to prevent tearing.",
+        )
+
+    if not extent_layers:
+        verts = [v for _, side, v in loop.vertices() if side == 0]
+        extents = infer_extents(bends, verts, cfg, report)
+        if report.has_errors:
+            return result
+        result.before.extend(
+            render.curves_payload(
+                [LineCurve(-1, None, s.a, s.b) for s in extents], "extent", cfg.chord_tol
+            )
         )
 
     pairs = pair_bends(bends, extents, cfg, report)
@@ -324,7 +421,7 @@ def save(result: Result, out_path: str, single_layer: bool = True) -> None:
     dxfio.write_result(
         result.doc,
         result.mapping,
-        result.surgery.kept,
+        [*result.surgery.kept, *result.holes],
         result.surgery.added,
         out_path,
         result.report,

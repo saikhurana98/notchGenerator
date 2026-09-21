@@ -1,6 +1,7 @@
 # notchgen
 
-Adds bend-relief notches to sheet-metal flat-pattern DXF files exported from Fusion 360.
+Adds bend-relief notches to sheet-metal flat-pattern DXF files exported from Fusion 360 or
+Onshape.
 
 A Fusion flat-pattern export contains the outer profile, interior profiles, bend lines, and bend
 extent lines — but no relief cuts where a bend meets an outer edge. Without those cuts the material
@@ -8,7 +9,12 @@ tears or deforms at the bend. `notchgen` finds every bend line, pairs it with it
 and cuts a notch into the outer profile at each end of the bend. The result is a cut-ready DXF
 containing only the outer and interior profiles.
 
-There is a browser portal with a before/after view, and a CLI for scripting.
+An Onshape export is laid out differently — holes on the same layer as the outline, bend lines
+split over two layers, tangent lines only when asked for — and is handled without any extra setup;
+see [Onshape exports](#onshape-exports).
+
+There is a browser portal with a before/after view, and a CLI for scripting. Both take any
+number of files at once.
 
 ## Quick start
 
@@ -59,11 +65,28 @@ Once installed, start the portal again any time from a new terminal with:
 notchgen-web
 ```
 
+## The portal
+
+Drop in one file or twenty. Each gets a tab along the bottom, with a status dot once it has run.
+The left panel is the layer tree: every layer in the file, what it holds, and which role it plays.
+Hovering a layer lights it up in the view and dims everything else, so you can see what you are
+about to call the outer profile before committing to it; clicking keeps it lit. **Apply to all**
+copies the current file's mapping onto every other open file sharing those layer names.
+
+**Generate notches** runs the whole batch. The download button then hands back a single DXF, or a
+zip of every result when there is more than one; each tab also offers its own file.
+
 ## Quick start (CLI)
 
 ```sh
 uv sync
 uv run notchgen "samples/front_suspension - 1 (2.5 mm).dxf" -o out.dxf
+```
+
+Any number of inputs, into a directory:
+
+```sh
+uv run notchgen parts/*.dxf --depth 0.4 -O out/
 ```
 
 Inspect a file without changing it:
@@ -128,6 +151,12 @@ ends up marginally *deeper* than the number given — on the sample, a 2 mm dept
 of actual relief. Use `--depth-from edge` to get exactly `depth` mm of material removed regardless of
 where the bend line stops.
 
+The edge does not always cross the bend zone square-on. On an Onshape part one shoulder of the notch
+routinely sits behind the bend line's end — by 0.5 mm, sometimes 1.5 mm — and a shallow notch measured
+from that end would put its apex *outboard* of that shoulder: no relief on that side, and a cut that
+crosses itself. So the apex is never placed less than `depth` inboard of the innermost shoulder; an
+`apex-deepened` note says where that happened. A 0.4 mm notch is 0.4 mm of relief at every bend end.
+
 ## Bend and extent geometry
 
 These are not always exported as `LINE` entities. A bend or an extent can arrive as a two-vertex
@@ -141,12 +170,37 @@ remaining bends are still notched — one odd bend on a thirty-bend part should 
 twenty-nine their relief cuts. If *no* bend can be paired, that is an error, and it usually means the
 bend and extent layers are mapped the wrong way round.
 
+## Onshape exports
+
+Right-click the flat pattern in Onshape and export it as DXF. The file differs from Fusion's in three
+ways, all detected from the layer names:
+
+| Onshape layer | What notchgen does with it |
+| --- | --- |
+| `SHEETMETAL_CUT_LINES` | Outline *and* holes share this layer. The loops are stitched separately, the largest closed one that encloses the rest is taken as the outer profile, and the holes are carried through untouched — a `CIRCLE` stays a `CIRCLE`. Two parts side by side, or an open chain, are still refused. |
+| `SHEETMETAL_BEND_LINES_UP`, `SHEETMETAL_BEND_LINES_DOWN` | Both are bend lines. A role can be mapped to several layers: `--bend A --bend B` on the command line, a combined entry in the portal's dropdown. |
+| `SHEETMETAL_BEND_TANGENT_LI` | The bend extents, if they are there. (Onshape itself cuts the name short at 26 characters.) They only appear when tangent lines were switched on for the export. |
+
+**Without tangent lines** the bend zone is read off the outline. Where a bend meets a free edge,
+Onshape's outline has a vertex at each edge of the bend zone — exactly the two points a tangent line
+would have ended on — sitting at equal and opposite offsets from the bend line. Each bend takes the
+narrowest width that shows up as such a pair; a bend that shows none (the edge ran straight on past
+the zone, leaving a vertex on one side only, or none) takes a width the other bends established, with
+a warning when that was a guess. On the real exports this was checked against, the notches built this
+way match the ones built from the same part's real tangent lines to within 0.001 mm.
+
+If a file gives no evidence at all, say so explicitly with `--bend-zone WIDTH` (or *Bend zone width*
+under the portal's advanced settings), or re-export with tangent lines on.
+
 ## Layer mapping
 
-Layer names are auto-detected — `OUTER*`/`*PROFILE*`, `INTERIOR*`/`INNER*`, `BEND`, `*EXTENT*` — and,
+Layer names are auto-detected — `OUTER*`/`*PROFILE*`/`*CUT_LINES`, `INTERIOR*`/`INNER*`, `BEND`/`*BEND_LINES_UP`/`_DOWN`,
+`*EXTENT*`/`*TANGENT*` — and,
 when the names give nothing away, by structure: the extent layer holds twice the lines of the bend
 layer, and the outer profile is the largest layer left. Override with `--outer`, `--interior`,
-`--bend`, `--extent`, or with the dropdowns in the portal.
+`--bend`, `--extent`, or with the dropdowns in the portal. Only the outer and bend layers are
+required: with no interior layer the holes are looked for on the outer layer, and with no extent
+layer the bend zone is read off the outline.
 
 Note that Fusion writes these layers *implicitly* — only layer `0` appears in the file's LAYER table.
 `notchgen` creates proper layer records on the way out.
@@ -161,6 +215,7 @@ Note that Fusion writes these layers *implicitly* — only layer `0` appears in 
 | `--chord-tol` | 1e-3 | sagitta when flattening curves for hit-testing and display |
 | `--bridge-tol` | 0.01 | an outline left open by less than this is closed, with a warning |
 | `--max-stub` | 1.0 | furthest an extent end may sit from the material edge |
+| `--bend-zone` | auto | bend zone width, for a file with no extent layer |
 
 These are calibrated against the real numbers in a Fusion export rather than picked round: junction
 gaps come out around 4e-10, so `stitch-tol` has to be tiny; and `snap-tol` has to clear the 0.005
@@ -195,6 +250,24 @@ the bend; two notches whose cuts overlap; an outer profile that does not stitch 
 a notch edge crossing the profile somewhere other than its own anchors; and a rebuilt outline whose
 area does not match the notches that were cut from it.
 
+## Deployment
+
+`deploy/bootstrap.sh` provisions a Debian host: a `notchgen` service account, `uv`, a systemd unit,
+an nginx reverse proxy, and a sudo rule narrow enough to permit exactly one privileged verb
+(`systemctl restart notchgen`).
+
+```sh
+ssh root@host 'bash -s' < deploy/bootstrap.sh
+```
+
+`deploy/deploy.sh` publishes a checkout: rsync into place, `uv sync --frozen`, restart, then poll
+`/healthz`. If the new release will not answer, it puts the previous one back and restarts that
+instead, so a deploy that builds but does not start cannot take the portal down. `/api/version`
+reports the release that is actually serving.
+
+CI runs on every push and pull request: tests on a GitHub runner, then — for `main` only — a deploy
+on a self-hosted runner on the target host, followed by a smoke test through nginx.
+
 ## Layout
 
 ```
@@ -207,10 +280,11 @@ src/notchgen/
   dxfio.py      the only module that touches an ezdxf document
   pipeline.py   inspect / process / save
   render.py     flattening geometry to polylines for the browser
-  api.py        FastAPI routes and the session store
+  api.py        FastAPI routes and the batch session store
   cli.py        command line entry point
 web/            the portal: one page, no build step, no dependencies
-tests/          91 tests, including regressions pinned to the sample file
+deploy/         bootstrap, systemd unit, nginx site, health-gated deploy
+tests/          136 tests, including regressions pinned to the sample file
 ```
 
 ## Development

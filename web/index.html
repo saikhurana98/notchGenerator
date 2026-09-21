@@ -7,123 +7,146 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+<!-- ------------------------------------------------------------------ top bar -->
 <header class="topbar">
   <div class="brand">
     <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M2 17h6l4-9 4 9h6" fill="none" stroke="currentColor" stroke-width="2"
+      <path d="M2 17h6l4-9 4 9h6" fill="none" stroke="currentColor" stroke-width="2.2"
             stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
-    <span>notchgen</span>
+    <span class="wordmark">notchgen</span>
   </div>
-  <p class="tagline">Bend-relief notches for sheet-metal flat patterns</p>
+  <div class="docname" id="docname">No document</div>
+  <div class="topbar-actions">
+    <span class="chip" id="build-chip" hidden></span>
+    <button id="add-files" class="btn ghost" disabled>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      Add files
+    </button>
+    <button id="run" class="btn primary" disabled>Generate notches</button>
+    <a id="download" class="btn solid" hidden download>Download</a>
+  </div>
 </header>
 
-<main>
-  <!-- step 1 -->
-  <section id="step-upload" class="card">
-    <div id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a DXF file">
-      <svg viewBox="0 0 24 24" aria-hidden="true" class="dropicon">
-        <path d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"
-              fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-      <strong>Drop a DXF flat pattern here</strong>
-      <span>or click to browse</span>
-      <input type="file" id="file" accept=".dxf" hidden>
-    </div>
-    <p id="upload-error" class="status error" hidden></p>
-  </section>
+<!-- ------------------------------------------------------------------ body -->
+<main class="shell">
 
-  <!-- the loaded file, once there is one -->
-  <div id="filebar" class="filebar" hidden>
-    <svg viewBox="0 0 24 24" aria-hidden="true" class="fileicon">
-      <path d="M14 3v5h5M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8z"
-            fill="none" stroke="currentColor" stroke-width="1.7"
-            stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    <span id="filename"></span>
-    <button id="change-file" class="link">Change</button>
-  </div>
+  <!-- left: feature tree, then the feature dialog, as Onshape stacks them -->
+  <aside class="panel" id="left">
 
-  <!-- step 2 -->
-  <section id="step-map" class="card" hidden>
-    <h2>Layers</h2>
-    <div class="grid four" id="roles"></div>
-
-    <h2>Notch</h2>
-    <div class="grid four">
-      <label>Depth
-        <div class="unit"><input type="number" id="depth" value="2" min="0.01" step="0.1"><span>mm</span></div>
-      </label>
-      <label>Measured from
-        <select id="depth-from">
-          <option value="bend-end">Bend line end</option>
-          <option value="edge">Material edge</option>
-        </select>
-      </label>
-      <label>Shape
-        <select id="shape">
-          <option value="v">V</option>
-          <option value="rect">Flat bottomed</option>
-        </select>
-      </label>
-      <label>Sheet thickness
-        <div class="unit"><input type="number" id="thickness" min="0.01" step="0.1" placeholder="optional"><span>mm</span></div>
-      </label>
-      <label class="checkbox"><input type="checkbox" id="single_layer" checked> Export as single layer</label>
-    </div>
-
-    <details id="advanced">
-      <summary>Advanced tolerances</summary>
-      <div class="grid four">
-        <label>Stitch <input type="number" id="stitch_tol" value="0.000001" step="0.000001"></label>
-        <label>Vertex snap <input type="number" id="snap_tol" value="0.02" step="0.005"></label>
-        <label>Min fragment <input type="number" id="sliver_tol" value="0.05" step="0.01"></label>
-        <label>Curve sagitta <input type="number" id="chord_tol" value="0.001" step="0.001"></label>
-        <label>Close gaps under <input type="number" id="bridge_tol" value="0.01" step="0.01"></label>
-        <label>Max stub <input type="number" id="max_stub" value="1" step="0.1"></label>
-        <label class="checkbox"><input type="checkbox" id="merge_overlapping"> Allow overlapping cuts</label>
+    <section class="card" id="card-layers">
+      <div class="card-head">
+        <span>Layers</span>
+        <button id="apply-all" class="link" hidden title="Use this layer mapping for every open file">Apply to all</button>
       </div>
-    </details>
-
-    <div class="actions">
-      <button id="run" class="primary">Generate notches</button>
-      <span id="run-error" class="status error" hidden></span>
-    </div>
-  </section>
-
-  <!-- step 3 -->
-  <section id="step-review" class="card" hidden>
-    <div class="review-head">
-      <h2 id="result-title">Result</h2>
-      <div class="segmented" role="group" aria-label="View mode">
-        <button data-mode="split" class="active">Split</button>
-        <button data-mode="overlay">Overlay</button>
-        <button data-mode="after">Result</button>
+      <div class="tree" id="tree">
+        <p class="empty">Open a DXF to see its layers.</p>
       </div>
-      <button id="reset-view" class="link">Reset view</button>
-    </div>
+      <p class="hint" id="tree-hint" hidden>Hover a layer to highlight it. Click to keep it highlighted.</p>
+    </section>
 
-    <div id="views" class="views split">
-      <figure>
+    <section class="card dialog" id="card-params">
+      <div class="dialog-head">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12h4l2-7 2 7h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Bend relief</span>
+      </div>
+      <div class="dialog-body">
+        <label class="field">
+          <span>Depth</span>
+          <span class="unit"><input type="number" id="depth" value="2" min="0.01" step="0.1"><i>mm</i></span>
+        </label>
+        <label class="field">
+          <span>Measured from</span>
+          <select id="depth-from">
+            <option value="bend-end">Bend line end</option>
+            <option value="edge">Material edge</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Shape</span>
+          <select id="shape">
+            <option value="v">V notch</option>
+            <option value="rect">Flat bottomed</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Sheet thickness</span>
+          <span class="unit"><input type="number" id="thickness" min="0.01" step="0.1" placeholder="optional"><i>mm</i></span>
+        </label>
+        <label class="check"><input type="checkbox" id="single_layer" checked> Export as a single layer</label>
+
+        <details id="advanced">
+          <summary>Advanced</summary>
+          <label class="field">
+            <span title="Only used when a file has no bend-extent layer. Leave empty to read it off the outline.">Bend zone width</span>
+            <span class="unit"><input type="number" id="bend_zone" min="0.01" step="0.1" placeholder="auto"><i>mm</i></span>
+          </label>
+          <label class="field"><span>Stitch tolerance</span><input type="number" id="stitch_tol" value="0.000001" step="0.000001"></label>
+          <label class="field"><span>Vertex snap</span><input type="number" id="snap_tol" value="0.02" step="0.005"></label>
+          <label class="field"><span>Min fragment</span><input type="number" id="sliver_tol" value="0.05" step="0.01"></label>
+          <label class="field"><span>Curve sagitta</span><input type="number" id="chord_tol" value="0.001" step="0.001"></label>
+          <label class="field"><span>Close gaps under</span><input type="number" id="bridge_tol" value="0.01" step="0.01"></label>
+          <label class="field"><span>Max stub</span><input type="number" id="max_stub" value="1" step="0.1"></label>
+          <label class="check"><input type="checkbox" id="merge_overlapping"> Allow overlapping cuts</label>
+        </details>
+      </div>
+    </section>
+
+    <section class="card" id="card-diagnostics" hidden>
+      <div class="card-head"><span>Messages</span></div>
+      <div id="diagnostics"></div>
+    </section>
+  </aside>
+
+  <!-- right: graphics area -->
+  <section class="graphics" id="graphics">
+    <div class="views" id="views">
+      <figure class="view" id="fig-before">
         <figcaption>Before</figcaption>
         <svg id="svg-before" role="img" aria-label="Original outline"></svg>
       </figure>
-      <figure>
+      <figure class="view" id="fig-after">
         <figcaption>After</figcaption>
         <svg id="svg-after" role="img" aria-label="Notched outline"></svg>
       </figure>
     </div>
 
-    <div class="legend" id="legend"></div>
-    <div id="diagnostics"></div>
-
-    <div class="actions">
-      <a id="download" class="primary" hidden download>Download DXF</a>
-      <span id="download-name" class="muted"></span>
+    <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose or drop DXF files">
+      <svg viewBox="0 0 24 24" aria-hidden="true" class="dropicon">
+        <path d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"
+              fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <strong>Drop flat-pattern DXF files here</strong>
+      <span>or click to browse &mdash; several at once is fine</span>
+      <input type="file" id="file" accept=".dxf" multiple hidden>
     </div>
+
+    <div class="status-chip" id="status-chip" hidden></div>
+
+    <div class="viewbar" id="viewbar" hidden>
+      <div class="segmented" role="group" aria-label="View mode">
+        <button data-mode="split" class="active">Split</button>
+        <button data-mode="overlay">Overlay</button>
+        <button data-mode="after">Result</button>
+      </div>
+      <button id="reset-view" class="btn ghost small" title="Zoom to fit (F)">Fit</button>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text">Working…</span></div>
   </section>
 </main>
+
+<!-- ------------------------------------------------------------------ tabs -->
+<footer class="tabbar" id="tabbar" hidden>
+  <div class="tabs" id="tabs"></div>
+  <button id="add-tab" class="tab-add" title="Add more DXF files">+</button>
+</footer>
+
+<div class="drop-overlay" id="drop-overlay" hidden><div>Drop to add DXF files</div></div>
+<div class="toast" id="toast" hidden></div>
 
 <script src="app.js"></script>
 </body>
