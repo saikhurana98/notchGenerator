@@ -35,10 +35,15 @@ install -m 644 "$HERE/notchgen.service" /etc/systemd/system/notchgen.service
 systemctl daemon-reload
 systemctl enable notchgen >/dev/null
 
-# The deploy runs as notchgen and needs exactly one privileged verb: restarting the unit.
+# The deploy runs as notchgen and needs a few privileged verbs, and no others. sudoers
+# matches arguments exactly, so each line here has to be spelled the way deploy.sh calls it.
 echo "==> sudo rule"
 cat > /etc/sudoers.d/notchgen <<EOF
-$USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart notchgen, /usr/bin/systemctl status notchgen
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl start notchgen, \\
+    /usr/bin/systemctl stop notchgen, \\
+    /usr/bin/systemctl restart notchgen, \\
+    /usr/bin/systemctl reset-failed notchgen, \\
+    /usr/bin/journalctl -u notchgen -n 30 --no-pager
 EOF
 chmod 440 /etc/sudoers.d/notchgen
 visudo -cf /etc/sudoers.d/notchgen >/dev/null
