@@ -13,6 +13,8 @@ set -euo pipefail
 
 APP=/opt/notchgen/app
 PREV=/opt/notchgen/app.prev
+ENV=/opt/notchgen/env
+ENV_PREV=/opt/notchgen/env.prev
 UV=/opt/notchgen/.local/bin/uv
 PORT=8000
 
@@ -40,8 +42,12 @@ version=$(date +%Y.%m.%d)-${revision}
 echo "==> deploying ${version}"
 
 mkdir -p "$APP"
-rm -rf "$PREV"
+rm -rf "$PREV" "$ENV_PREV"
 [ -d "$APP/src" ] && cp -a "$APP" "$PREV"
+# The stamp is read as an EnvironmentFile, so it has to be written before the unit starts.
+# Snapshot it too, or a rollback leaves /api/version advertising the release that just
+# failed while the portal is in fact serving the old one.
+[ -f "$ENV" ] && cp -a "$ENV" "$ENV_PREV"
 
 unit stop || true
 
@@ -52,11 +58,11 @@ rsync -a --delete \
 cd "$APP"
 "$UV" sync --frozen --no-dev
 
-printf 'NOTCHGEN_VERSION=%s\nNOTCHGEN_REVISION=%s\n' "$version" "$revision" > /opt/notchgen/env
+printf 'NOTCHGEN_VERSION=%s\nNOTCHGEN_REVISION=%s\n' "$version" "$revision" > "$ENV"
 
 if bring_up; then
   echo "==> live: $(curl -fsS "http://127.0.0.1:${PORT}/api/version" || echo '?')"
-  rm -rf "$PREV"
+  rm -rf "$PREV" "$ENV_PREV"
   exit 0
 fi
 
@@ -72,6 +78,7 @@ echo "==> rolling back" >&2
 unit stop || true
 rm -rf "$APP"
 mv "$PREV" "$APP"
+[ -f "$ENV_PREV" ] && mv "$ENV_PREV" "$ENV"
 if bring_up; then
   echo "==> rolled back; the portal is serving the previous release" >&2
 else
