@@ -243,15 +243,22 @@ function renderTree() {
     }
     select.value = role;
     select.addEventListener('change', () => setRole(info.name, select.value));
-    // The row's own hover/click handlers must not fight the dropdown.
-    select.addEventListener('mousedown', (e) => e.stopPropagation());
+    // The row's click handler used to rebuild the tree, which threw this element away
+    // mid-interaction and shut the open dropdown. Keep the row from ever seeing these.
+    for (const type of ['pointerdown', 'mousedown', 'click']) {
+      select.addEventListener(type, (e) => e.stopPropagation());
+    }
 
     row.append(el('i', 'swatch'), name, meta, select);
     row.addEventListener('mouseenter', () => preview(info.name, false));
     row.addEventListener('mouseleave', () => preview(null, false));
     row.addEventListener('click', () => {
       state.picked = state.picked === info.name ? null : info.name;
-      renderTree();
+      // Toggle the class rather than re-rendering: rebuilding the tree here would destroy
+      // the row that was just clicked, along with any dropdown open inside it.
+      for (const other of host.querySelectorAll('.layer')) {
+        other.classList.toggle('selected', other.dataset.layer === state.picked);
+      }
       preview(state.picked, true);
     });
     if (state.picked === info.name) row.classList.add('selected');
@@ -636,28 +643,55 @@ function onWheel(event, svg) {
 function onDragStart(event, svg) {
   if (event.button !== 0 || !state.view) return;
   if (!modelPoint(event, svg)) return;
+  // Without this the browser starts its own selection gesture over the page, which fights
+  // the pan and makes it feel like it is losing the pointer.
+  event.preventDefault();
+
   const origin = { ...state.view };
-  svg.setPointerCapture(event.pointerId);
+  const scale = () => {
+    const box = svg.getBoundingClientRect();
+    const [, , w, h] = svg.getAttribute('viewBox').split(' ').map(Number);
+    return [w / box.width, h / box.height];
+  };
+  const [kx, ky] = scale();
   svg.classList.add('dragging');
+  try {
+    svg.setPointerCapture(event.pointerId);
+  } catch {
+    /* no capture available; the window-level listeners below still carry the drag */
+  }
 
   const move = (e) => {
-    const box = svg.getBoundingClientRect();
-    const viewBox = svg.getAttribute('viewBox').split(' ').map(Number);
-    const dx = ((e.clientX - event.clientX) / box.width) * viewBox[2];
-    const dy = ((e.clientY - event.clientY) / box.height) * viewBox[3];
-    state.view = { ...origin, x: origin.x - dx, y: origin.y - dy };
+    state.view = {
+      ...origin,
+      x: origin.x - (e.clientX - event.clientX) * kx,
+      y: origin.y - (e.clientY - event.clientY) * ky,
+    };
     applyView();
   };
+
+  let done = false;
   const stop = () => {
-    svg.releasePointerCapture(event.pointerId);
+    if (done) return;
+    done = true;
+    // releasePointerCapture throws once the capture has already been lost — which is
+    // exactly when this runs. Letting that escape used to skip the removals below, so the
+    // next drag added a second handler and the two moved the view twice as far.
+    try {
+      svg.releasePointerCapture(event.pointerId);
+    } catch {
+      /* already released */
+    }
     svg.classList.remove('dragging');
-    svg.removeEventListener('pointermove', move);
-    svg.removeEventListener('pointerup', stop);
-    svg.removeEventListener('pointercancel', stop);
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', stop);
+    window.removeEventListener('pointercancel', stop);
   };
-  svg.addEventListener('pointermove', move);
-  svg.addEventListener('pointerup', stop);
-  svg.addEventListener('pointercancel', stop);
+
+  // On the window, so a drag that runs off the edge of the pane still tracks and still ends.
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', stop);
+  window.addEventListener('pointercancel', stop);
 }
 
 // ---------------------------------------------------------------- plumbing

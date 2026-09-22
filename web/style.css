@@ -14,6 +14,9 @@
   --text-1: #e9ede3; --text-2: #99a091; --text-3: #5d6456; --text-4: #464d40;
   --paper: #dfe4d6; --ink: #14170f;
   --accent: #ff4c38; --accent-border: rgba(255, 76, 56, .4); --accent-wash: rgba(255, 76, 56, .06);
+  /* Text on an accent fill. Fixed in both themes — the accent does not move, so neither
+     may the ink on top of it. Near-black on #ff4c38 reads at about 6.4:1. */
+  --on-accent: #14170f;
   --overlay-light: rgba(233, 237, 227, .09); --overlay-faint: rgba(233, 237, 227, .04);
 
   --font-display: 'Doto', monospace;
@@ -137,11 +140,24 @@ button, input, select { font-family: inherit; color: inherit; }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 .btn.small { height: 26px; padding: 0 11px; font-size: 9px; }
 
-.btn.primary { color: var(--text-1); border-color: var(--border-hover); }
-.btn.primary:hover:not(:disabled) { background: var(--overlay-faint); }
+/* The two actions that matter carry filled styles, and different ones: paper for the verb
+   that does the work, accent for the thing you came away with. */
+.btn.primary {
+  background: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink);
+  font-weight: 700;
+}
+.btn.primary:hover:not(:disabled) { filter: brightness(1.07); }
+.btn.primary:disabled { background: transparent; color: var(--text-3); border-color: var(--border-3); }
 
-.btn.solid { background: var(--paper); border-color: var(--paper); color: var(--ink); }
-.btn.solid:hover { filter: brightness(1.08); }
+.btn.solid {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+.btn.solid:hover { filter: brightness(1.07); }
 
 .icon-btn {
   display: inline-flex;
@@ -383,6 +399,9 @@ details#advanced summary:hover { color: var(--text-1); }
   position: relative;
   flex: 1;
   min-width: 0;
+  /* A pan must not double as a text selection across the page. */
+  user-select: none;
+  -webkit-user-select: none;
   /* The dot matrix itself, doubling as a CAD backdrop. */
   background-color: var(--bg-0);
   background-image: radial-gradient(var(--border-2) 1px, transparent 1px);
