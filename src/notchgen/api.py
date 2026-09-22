@@ -498,5 +498,20 @@ def _as_download(path: Path, filename: str, media_type: str) -> FileResponse:
     )
 
 
+class Portal(StaticFiles):
+    """The portal's own files, always revalidated.
+
+    A deploy replaces index.html, app.js and style.css under those same names, and with no
+    cache header a browser applies its own heuristic and can go on serving the build it
+    already has — so a deploy lands on the server and not in the window. `no-cache` means
+    "ask first", not "do not store": an unchanged file still answers 304 with no body.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
 if WEB_DIR is not None:
-    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+    app.mount("/", Portal(directory=WEB_DIR, html=True), name="web")

@@ -315,3 +315,12 @@ def test_the_version_route_says_what_is_deployed(client):
     body = client.get("/api/version").json()
     assert body["version"] == "dev"
     assert body["max_files"] >= 1
+
+
+def test_the_portal_files_are_always_revalidated(client):
+    """A deploy reuses these names, so a browser must ask before reusing what it holds."""
+    page = client.get("/")
+    assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-cache"
+    for asset in ("/style.css", "/app.js"):
+        assert client.get(asset).headers["cache-control"] == "no-cache"
